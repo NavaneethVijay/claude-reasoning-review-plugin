@@ -20,56 +20,79 @@ from someone who is operating at that level independently.
 
 ## Sample output
 
-Running `/reasoning-review week` opens an interactive pane. Each row expands on press to show the
-evidence behind its score (abbreviated here; colors in the real pane: green for strong scores, red
-for weak ones, and ↑/↓/→ colored the same way for trend):
+Running `/reasoning-review week` opens an interactive pane on an **Overview** screen — a ~10-second
+read on how the window went:
 
 ```
-Strong Senior, showing Staff-level architecture behaviour
-Focus next: Root-cause debugging
+Developer Review
+Sep 30 – Oct 6
 
+Engineering Capability
+7.9  ↑ +0.4
+──────────────────────────────────────────
+
+What changed
 You're getting better at challenging Claude's architectural suggestions. In the last few
-tasks you caught coupling and ownership issues before implementation. One pattern to work
-on: you tend to jump into implementation quickly when debugging — spend more time
-establishing the failure boundary first.
+tasks you caught coupling and ownership issues before implementation.
 
-Gap to next level: Show the same independent investigation in debugging that you already
-show in architecture — isolate the failure before proposing a fix.
+Strongest
+Architecture                8.2  ↑
+
+Needs attention
+Debugging                   6.9  ↓
+
+[ View full review ]
+```
+
+Pressing "View full review" drills into the **Metrics** screen: every scored dimension as a bar,
+with its delta, plus a deterministic Summary (Improved / Declined / Consistent / Needs attention —
+computed from real score movement, never re-asked of the model):
+
+```
+← Overview
+
+Summary
+──────────────────────────────────────────
+Improved
+ • Architecture
+ • AI Collaboration
+
+Declined
+ • Debugging
+
+Needs attention
+ • Debugging
 
 Engineering signals
 ──────────────────────────────────────────
-▸ Architecture                 8.2  ↑
-▸ Problem Solving               7.8  →
-▸ Debugging                     6.9  ↓
-▸ Code Quality                  8.0  ↑
-▸ Technical Judgment            7.6  ↑
-▸ AI Collaboration              8.4  ↑
-
-Overall
-──────────────────────────────────────────
-▸ Overall – Engineering Capability   7.9  ↑
-▸ Overall – Engineering Judgment     7.4  →
-▸ Overall – AI Agency                8.1  ↑
-
-Level: Senior+
-Bands: Junior → Mid-level → Senior → Staff → Lead/Architect. A trailing + or - means the
-evidence leans toward the next or previous band, not a clean fit for one.
+▸ Architecture                 8.2  ↑ +0.7
+   ████████████████░░░░
+▸ Debugging                    6.9  ↓ -0.4
+   █████████████░░░░░░░
 ```
 
-Pressing a row (e.g. "Architecture") expands it in place:
+Pressing a row expands "Why this score?" — the evidence behind it, not just the number:
 
 ```
-▾ Architecture                 8.2  ↑
-   Evidence from recent tasks
-   • Challenged the proposed repository abstraction before implementation, citing
+▾ Architecture                 8.2  ↑ +0.7
+   ████████████████░░░░
+   Why this score?
+   ──────────────────────────────
+   Strong evidence
+   ✓ Challenged the proposed repository abstraction before implementation, citing
      caching and tenant-isolation consequences.
-   • Identified coupling between the GraphQL client and the application layer before
+   ✓ Identified coupling between the GraphQL client and the application layer before
      it was built, not after.
    Strong senior-level architectural reasoning; approaching Staff level.
+   ──────────────────────────────
+   Previous: 7.5   Current: 8.2
+   2 observations
+   Confidence: High
 ```
 
-Metrics with nothing to go on in the window (e.g. no security work happened) are left off the
-list entirely — never guessed at or scored low for absence of evidence.
+Metrics with nothing to go on in the window (e.g. no security work happened) are never guessed at
+or scored low for absence of evidence — they're called out explicitly ("Insufficient evidence this
+window...") rather than silently dropped.
 
 ## What it reads, what it costs, where it goes
 
@@ -87,19 +110,30 @@ list entirely — never guessed at or scored low for absence of evidence.
 
 ## What it shows
 
-A pane (`Reasoning Review`) with:
+A pane (`Reasoning Review`) with two screens:
 
-- A short narrative: one improving pattern, one thing to work on, a current signal, a focus-next.
+**Overview** — the headline Engineering Capability score and trend, a short "what changed"
+narrative, and the single strongest and weakest metrics this window. A "View full review" button
+drills into Metrics.
+
+**Metrics** — the full breakdown:
+
+- A deterministic **Summary** — Improved / Declined / Consistent / Needs attention — computed in
+  code from actual score deltas, never re-asked of the model, so it's traceable to real movement.
 - **Engineering signals** — 12 metrics (Technical Knowledge, Problem Solving, Debugging,
   Architecture, System Design, Code Quality, Testing, Security & Performance, Decision Making,
-  Requirements, Engineering Judgment, AI Collaboration), each scored 0–10 where the window has
-  real evidence (metrics with nothing to go on are left out, not guessed low).
+  Requirements, Engineering Judgment, AI Collaboration), each scored 0–10 against explicit rubric
+  anchors (what a 2, 5, 8, or 10 concretely looks like for that metric) where the window has real
+  evidence. Metrics with nothing to go on are called out as insufficient evidence, not guessed low.
 - **Overall** — Engineering Capability, Engineering Judgment, and AI Agency (how much of the
   reasoning was genuinely yours vs. accepted from Claude without challenge).
-- A trend arrow (↑ ↓ →) per score, compared against your previous run on this project and window.
+- A bar, trend arrow (↑ ↓ →), and numeric delta per score, compared against your previous run on
+  this project and window.
 - A current-level estimate with an explicit gap to the next band.
 
-Every row expands on press to show the concrete evidence behind its score.
+Every row expands into "Why this score?" — the evidence behind it as a checklist, previous vs.
+current score, how many observations back it, and a confidence rating (High/Medium/Low) for how
+solid that evidence actually is.
 
 ## Level bands
 
@@ -163,8 +197,11 @@ With no recent activity on the current project, it says so plainly instead of fa
 
 - Never infers a skill from terminology alone — only from the reasoning actually shown.
 - Absence of evidence is never scored as poor ability; a metric untouched in the window is left
-  unscored rather than guessed.
-- Every score is grounded in specific, cited moments from the transcript.
+  unscored rather than guessed — never manufactured to fill a gap.
+- Every score is grounded in specific, cited moments from the transcript, scored against explicit
+  rubric anchors (2/5/8/10) rather than an isolated estimate.
+- Every non-null score also carries a confidence (High/Medium/Low), reflecting how much and how
+  clear the evidence behind it actually is — independent of how good or bad the score is.
 
 ## Developing
 
