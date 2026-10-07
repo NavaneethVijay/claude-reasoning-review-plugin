@@ -1,6 +1,6 @@
 {
   "name": "reasoning-review",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Self-facing /reasoning-review command: a scored, 12-metric engineering-skill assessment plus level estimate, from your own Claude Code sessions over the current project's last week or month.",
   "author": { "name": "Navaneeth", "email": "sainavaneeth@live.in" },
   "types": "./types/index.d.ts"
