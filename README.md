@@ -134,6 +134,19 @@ The pane's gap line always says, concretely, what would need to show up to justi
 
 Pick the **user** scope so it's available in every project.
 
+## Updating
+
+Installing it gets you a snapshot, not a live link to this repo — a push here doesn't reach anyone
+who's already installed it. Whenever a new version has shipped (check `version` in `plugin.json`,
+or just ask the maintainer), get it with:
+
+```
+claude plugin update reasoning-review
+```
+
+Then restart your Claude Code session — an update only takes effect in sessions started after it,
+not ones already running.
+
 ## Usage
 
 Run from inside the project you want assessed — never anywhere else, since it only reads that
@@ -162,3 +175,12 @@ claude plugin test .
 
 See `claude plugin test`'s output for the full suite (pure-logic unit tests plus interactive pane
 tests that press a row and assert its evidence expands).
+
+### Maintainer: releasing a change
+
+1. Bump `version` in `.claude-plugin/plugin.json` — anyone checking `claude plugin list` relies on
+   this to see whether they're behind.
+2. `git publish` — a local alias for `git push && claude plugin update reasoning-review`, so your
+   own installed copy updates in the same step. (This only updates *your* copy — see "Updating"
+   above for why everyone else still has to pull their own update.)
+3. Restart your own session to pick it up.

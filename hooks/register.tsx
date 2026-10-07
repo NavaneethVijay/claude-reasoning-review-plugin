@@ -1,12 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register } from 'claude-code'
 
-import type { Digest, HistoryEntry, MetricEntry, ViewDigest, ViewMetric } from '../types'
+import type { Digest, HistoryEntry, MetricEntry, RunUsage, ViewDigest, ViewMetric } from '../types'
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 const MAX_TRANSCRIPT_CHARS = 180_000
 const PANE = 'reasoning-review'
-const TREND_EPSILON = 0.05
+const TREND_EPSILON = 0.4
 
 const METRICS = [
   ['Technical Knowledge', 'Understands concepts, internals, APIs, constraints; can explain why'],
@@ -155,6 +155,7 @@ async function readSessionLines(
     const role = parsed.message?.role ?? parsed.type
     const text = textOfContent(parsed.message?.content).trim()
     if (!text) continue
+    if (text.startsWith('<')) continue // slash-command invocations and local-command wrappers, not human prose
     lines.push(`${role === 'user' ? 'Human' : 'Claude'}: ${text}`)
   }
   return lines
@@ -223,11 +224,16 @@ function withTrend(entries: Record<string, MetricEntry>, previous: Record<string
   return viewed
 }
 
-export function buildViewDigest(digest: Digest, previous: HistoryEntry | undefined): ViewDigest {
+export function buildViewDigest(
+  digest: Digest,
+  previous: HistoryEntry | undefined,
+  usage?: RunUsage,
+): ViewDigest {
   return {
     ...digest,
     metrics: withTrend(digest.metrics, previous?.metrics),
     overall: withTrend(digest.overall, previous?.overall),
+    usage,
   }
 }
 
@@ -371,6 +377,18 @@ export const register: Register = on => {
             Bands: Junior → Mid-level → Senior → Staff → Lead/Architect. A trailing + or - means
             the evidence leans toward the next or previous band, not a clean fit for one.
           </Text>
+          {digest.usage && (
+            <Text color="subtle">
+              Last run: {(
+                digest.usage.inputTokens +
+                digest.usage.cacheReadTokens +
+                digest.usage.cacheCreationTokens
+              ).toLocaleString()}{' '}
+              input tokens ({digest.usage.cacheReadTokens.toLocaleString()} from cache,{' '}
+              {digest.usage.cacheCreationTokens.toLocaleString()} newly cached),{' '}
+              {digest.usage.outputTokens.toLocaleString()} output tokens
+            </Text>
+          )}
         </Box>
       </Box>
     )
@@ -419,9 +437,7 @@ export const register: Register = on => {
     }
 
     const projectName = root.split('/').filter(Boolean).at(-1) ?? root
-    const prompt = `${RUBRIC_PROMPT}
-
-Project: ${projectName}
+    const windowBlock = `Project: ${projectName}
 Window: last ${windowLabel} (${days} days)
 ${truncatedNote}
 
@@ -430,7 +446,10 @@ ${transcript}`
 
     const result = await $.model.complete({
       model: 'sonnet',
-      prompt,
+      prompt: [
+        { text: RUBRIC_PROMPT, cache: true },
+        { text: windowBlock },
+      ],
       effort: 'high',
       maxTokens: 8000,
       timeoutMs: 180_000,
@@ -445,6 +464,13 @@ ${transcript}`
       return { text: "Couldn't parse the model's assessment this time — try again." }
     }
 
+    const usage: RunUsage = {
+      inputTokens: result.usage.input_tokens,
+      outputTokens: result.usage.output_tokens,
+      cacheReadTokens: result.usage.cache_read_input_tokens,
+      cacheCreationTokens: result.usage.cache_creation_input_tokens,
+    }
+
     const historyKey = `history:${root}:${days}`
     const entry: HistoryEntry = { timestamp: new Date().toISOString(), days, ...digest }
     const existingHistory = await $.store.get(historyKey).catch(() => undefined)
@@ -453,12 +479,15 @@ ${transcript}`
     const updatedHistory = [...priorHistory, entry].slice(-24)
     await $.store.set(historyKey, updatedHistory).catch(() => undefined)
 
-    const viewDigest = buildViewDigest(digest, previous)
+    const viewDigest = buildViewDigest(digest, previous, usage)
     await update($, digestAtom, () => viewDigest)
     await $.ui.open({ id: PANE, title: 'Reasoning Review' })
 
+    const totalInputTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens
+    const usageLine = `Tokens: ${totalInputTokens.toLocaleString()} in (${usage.cacheReadTokens.toLocaleString()} cached, ${usage.cacheCreationTokens.toLocaleString()} newly cached), ${usage.outputTokens.toLocaleString()} out`
+
     return {
-      text: `Scorecard updated for the last ${windowLabel} — see the "Reasoning Review" pane.\nCurrent signal: ${digest.currentSignal ?? digest.level}`,
+      text: `Scorecard updated for the last ${windowLabel} — see the "Reasoning Review" pane.\nCurrent signal: ${digest.currentSignal ?? digest.level}\n${usageLine}`,
     }
   }).catch(($, e, next) =>
     next.called

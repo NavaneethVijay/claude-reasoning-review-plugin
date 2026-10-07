@@ -67,6 +67,32 @@ function mockSessionWithOneMessage(on: any) {
   on('fs.read', () => ({ value: jsonl }))
 }
 
+function mockSessionWithCommandInvocationNoise(on: any) {
+  const now = new Date().toISOString()
+  const lines = [
+    JSON.stringify({
+      type: 'user',
+      isSidechain: false,
+      timestamp: now,
+      message: { role: 'user', content: 'why does this caching layer invalidate on write?' },
+    }),
+    JSON.stringify({
+      type: 'user',
+      isSidechain: false,
+      timestamp: now,
+      message: {
+        role: 'user',
+        content: '<command-name>/reasoning-review</command-name>\n<command-args>week</command-args>',
+      },
+    }),
+  ]
+  const jsonl = lines.join('\n')
+  on('fs.list', () => ({
+    value: [{ name: 'abc.jsonl', kind: 'file', size: jsonl.length, mtimeMs: Date.now(), isLink: false }],
+  }))
+  on('fs.read', () => ({ value: jsonl }))
+}
+
 // --- pure-function unit tests (no engine needed) ---
 
 test('parseDigest reads a clean JSON object', () => {
@@ -159,6 +185,30 @@ test('parses the digest and opens the pane', async ($, on) => {
   expect(opened).toBe('reasoning-review')
   expect(result.text).toContain('Reasoning Review')
   expect(result.text).toContain('Strong Senior, showing Staff-level architecture behaviour.')
+})
+
+test('excludes its own slash-command invocations from the evidence it sends the model', async ($, on) => {
+  mock.env(on, { HOME: '/home/test' })
+  on('session.root', () => ({ value: '/work/project' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  mockSessionWithCommandInvocationNoise(on)
+
+  let promptSeen = ''
+  on('model.complete', ($, e) => {
+    promptSeen = typeof e.prompt === 'string' ? e.prompt : ''
+    return {
+      value: {
+        isAnswered: true,
+        text: JSON.stringify(buildDigest()),
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    }
+  })
+
+  await $.command.run({ command: 'reasoning-review', args: 'week' })
+
+  expect(promptSeen).toContain('why does this caching layer invalidate on write?')
+  expect(promptSeen).not.toContain('command-name')
 })
 
 test('runs twice in a row without error (persistence path)', async ($, on) => {

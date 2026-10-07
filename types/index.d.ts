@@ -21,6 +21,13 @@ export type Trend = '↑' | '↓' | '→' | null
 
 export type ViewMetric = MetricEntry & { trend: Trend }
 
+export type RunUsage = {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+}
+
 export type ViewDigest = {
   metrics: Record<string, ViewMetric>
   overall: Record<string, ViewMetric>
@@ -30,6 +37,7 @@ export type ViewDigest = {
   narrative?: string
   currentSignal?: string
   focusNext?: string
+  usage?: RunUsage
 }
 
 declare module 'claude-code' {
