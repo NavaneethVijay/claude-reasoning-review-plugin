@@ -131,6 +131,56 @@ test('buildViewDigest attaches a trend per metric and overall score', () => {
   expect(view.overall['Engineering Capability'].trend).toBe('→')
 })
 
+test('buildViewDigest buckets metrics into improved/declined/consistent/needsAttention/noSignal', () => {
+  const previous = { ...buildDigest({ architecture: 7, debugging: 7.4 }), timestamp: 't', days: 7 }
+  const current = buildDigest({ architecture: 8.2, debugging: 3.9 })
+
+  const view = buildViewDigest(current, previous)
+
+  expect(view.report.improved).toEqual(['Architecture'])
+  expect(view.report.declined).toEqual(['Debugging'])
+  expect(view.report.needsAttention).toEqual(['Debugging'])
+  expect(view.report.noSignal).toContain('Testing')
+  expect(view.report.noSignal).not.toContain('Architecture')
+})
+
+test('buildViewDigest leaves movement buckets empty with no prior history, but still flags needsAttention', () => {
+  const current = buildDigest({ architecture: 8.2, debugging: 3.9 })
+
+  const view = buildViewDigest(current, undefined)
+
+  expect(view.report.improved).toEqual([])
+  expect(view.report.declined).toEqual([])
+  expect(view.report.consistent).toEqual([])
+  expect(view.report.needsAttention).toEqual(['Debugging'])
+})
+
+test('toMetricEntry-via-parseDigest preserves confidence and observationCount, ignoring confidence on a null score', () => {
+  const raw = {
+    ...buildDigest(),
+    metrics: {
+      ...buildDigest().metrics,
+      Architecture: {
+        score: 8,
+        evidence: ['a', 'b', 'c'],
+        confidence: 'High',
+        observationCount: 3,
+      },
+      Testing: {
+        score: null,
+        evidence: [],
+        confidence: 'High', // bogus: must be dropped since score is null
+      },
+    },
+  }
+
+  const digest = parseDigest(JSON.stringify(raw))
+
+  expect(digest?.metrics.Architecture.confidence).toBe('High')
+  expect(digest?.metrics.Architecture.observationCount).toBe(3)
+  expect(digest?.metrics.Testing.confidence).toBeUndefined()
+})
+
 // --- engine-level tests ---
 
 test('registers the /reasoning-review command on session start', async ($, on) => {
@@ -276,7 +326,7 @@ test('pane shows a placeholder before any scorecard has run', async $ => {
   expect(await ui.find({ text: /Run \/reasoning-review/ })).toBeTruthy()
 })
 
-test('populated pane shows rows collapsed, and expands evidence on press', async ($, on) => {
+test('populated pane opens on the Overview screen with a headline score and strongest/weakest callouts', async ($, on) => {
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -301,6 +351,41 @@ test('populated pane shows rows collapsed, and expands evidence on press', async
     props: PANE_PROPS,
   })
 
+  expect(await ui.find({ text: /Developer Review/ })).toBeTruthy()
+  expect(await ui.find({ text: /Engineering Capability/ })).toBeTruthy()
+  expect(await ui.find({ text: /Strongest/ })).toBeTruthy()
+  expect(await ui.find({ text: /Needs attention/ })).toBeTruthy()
+  // The Metrics screen's content isn't rendered until navigated to.
+  expect(await ui.find({ text: /Challenged the proposed abstraction/ })).toBeFalsy()
+})
+
+test('populated pane navigates into Metrics, shows rows collapsed, and expands evidence on press', async ($, on) => {
+  mock.env(on, { HOME: '/home/test' })
+  on('session.root', () => ({ value: '/work/project' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  mockSessionWithOneMessage(on)
+
+  const digest = buildDigest()
+  on('model.complete', () => ({
+    value: {
+      isAnswered: true,
+      text: JSON.stringify(digest),
+      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    },
+  }))
+
+  await $.command.run({ command: 'reasoning-review', args: 'week' })
+
+  const ui = await $.ui.mount({
+    plugin: 'reasoning-review',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'reasoning-review',
+    props: PANE_PROPS,
+  })
+
+  await ui.press({ key: 'view-full-review' })
+
   expect(await ui.find({ text: /Architecture/ })).toBeTruthy()
   expect(await ui.find({ text: /Challenged the proposed abstraction/ })).toBeFalsy()
   expect(await ui.find({ text: /leans toward the next or previous band/ })).toBeTruthy()
@@ -308,4 +393,9 @@ test('populated pane shows rows collapsed, and expands evidence on press', async
   await ui.press({ key: 'Architecture' })
 
   expect(await ui.find({ text: /Challenged the proposed abstraction/ })).toBeTruthy()
+  expect(await ui.find({ text: /Why this score\?/ })).toBeTruthy()
+
+  await ui.press({ key: 'back-to-overview' })
+
+  expect(await ui.find({ text: /Developer Review/ })).toBeTruthy()
 })

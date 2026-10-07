@@ -1,7 +1,11 @@
+export type Confidence = 'High' | 'Medium' | 'Low'
+
 export type MetricEntry = {
   score: number | null
   evidence: string[]
   assessment?: string
+  confidence?: Confidence
+  observationCount?: number
 }
 
 export type Digest = {
@@ -19,7 +23,15 @@ export type HistoryEntry = Digest & { timestamp: string; days: number }
 
 export type Trend = '↑' | '↓' | '→' | null
 
-export type ViewMetric = MetricEntry & { trend: Trend }
+export type ViewMetric = MetricEntry & { trend: Trend; delta: number | null; previousScore: number | null }
+
+export type ReportBuckets = {
+  improved: string[]
+  declined: string[]
+  consistent: string[]
+  needsAttention: string[]
+  noSignal: string[]
+}
 
 export type RunUsage = {
   inputTokens: number
@@ -38,13 +50,19 @@ export type ViewDigest = {
   currentSignal?: string
   focusNext?: string
   usage?: RunUsage
+  report: ReportBuckets
+  generatedAt: string
+  days: number
 }
+
+export type Screen = 'overview' | 'metrics'
 
 declare module 'claude-code' {
   interface PluginState {
     'reasoning-review': {
       digest: ViewDigest | null
       expanded: Record<string, boolean>
+      screen: Screen
     }
   }
 }
