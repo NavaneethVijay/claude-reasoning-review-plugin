@@ -112,10 +112,6 @@ window...") rather than silently dropped.
 - Nothing is sent anywhere beyond that one model call. The result is shown only to you, in the pane,
   in that session.
 
-There's also an **`org-reasoning-review`** fork in this repo (sibling directory) that adds an
-opt-in push to an admin dashboard — kept as a separate plugin rather than a mode of this one, so
-this plugin's self-facing-only guarantee stays unconditional. See `org-reasoning-review/README.md`.
-
 ## What it shows
 
 A pane (`Reasoning Review`) with two screens:
