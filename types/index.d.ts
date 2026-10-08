@@ -38,6 +38,10 @@ export type RunUsage = {
   outputTokens: number
   cacheReadTokens: number
   cacheCreationTokens: number
+  compressionCalls?: number
+  rawContextChars: number
+  sentContextChars: number
+  contextTruncated: boolean
 }
 
 export type ViewDigest = {

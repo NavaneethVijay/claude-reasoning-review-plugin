@@ -99,14 +99,22 @@ window...") rather than silently dropped.
 - Reads `~/.claude/projects/<this-project>/*.jsonl` — **only the current project's own history**,
   filtered to the requested window. It never reads another project's history, and never aggregates
   across projects (different codebases aren't comparable).
-- Sends that transcript text to the model through your own session's own API usage (one
-  `$.model.complete` call) — the same account/credits your Claude Code session already uses. No
-  separate service, no external server.
+- Sends that transcript text to the model through your own session's own API usage — the same
+  account/credits your Claude Code session already uses. No separate service, no external server.
+  The scoring call itself uses whichever model your session is actually running. If a window is too
+  large to send in one shot (a very busy week, or one very long conversation), it's first condensed
+  in parallel, cheap passes (a fixed, inexpensive model) that preserve chronology and concrete,
+  citable detail — never just cutting off the oldest part of the window — before the single scoring
+  call reads it.
 - Stores the resulting scores in the plugin's own local store (for the trend arrows on your next
   run) — kept per project and per window size (week/month tracked separately), never synced or
   shared anywhere.
 - Nothing is sent anywhere beyond that one model call. The result is shown only to you, in the pane,
   in that session.
+
+There's also an **`org-reasoning-review`** fork in this repo (sibling directory) that adds an
+opt-in push to an admin dashboard — kept as a separate plugin rather than a mode of this one, so
+this plugin's self-facing-only guarantee stays unconditional. See `org-reasoning-review/README.md`.
 
 ## What it shows
 
