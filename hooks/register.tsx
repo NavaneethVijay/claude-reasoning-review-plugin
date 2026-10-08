@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, Register } from 'claude-code'
+import type { Elements, EngineInterface, ModelUsage, Register } from 'claude-code'
 
 import type {
   Confidence,
@@ -15,6 +15,7 @@ import type {
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 const MAX_TRANSCRIPT_CHARS = 180_000
+const COMPRESSION_CHUNK_CHARS = 60_000
 const PANE = 'reasoning-review'
 const TREND_EPSILON = 0.4
 const NEEDS_ATTENTION_MAX = 4
@@ -331,6 +332,121 @@ async function readSessionLines(
   return lines
 }
 
+type SessionBlock = { id: string; lines: string[] }
+
+function blockText(block: SessionBlock): string {
+  return [`--- session ${block.id} ---`, ...block.lines].join('\n')
+}
+
+function chunksText(chunk: SessionBlock[]): string {
+  return chunk.map(blockText).join('\n')
+}
+
+// Packs whole sessions into chunks ≤ chunkChars, never splitting a session
+// across chunks — except a single session whose own text alone exceeds
+// chunkChars, which is sub-chunked by line (never mid-line) into ordered
+// "(part N/M)" blocks so chronology and provenance survive.
+function chunkSessions(blocks: SessionBlock[], chunkChars: number): SessionBlock[][] {
+  const expanded: SessionBlock[] = []
+  for (const block of blocks) {
+    if (blockText(block).length <= chunkChars) {
+      expanded.push(block)
+      continue
+    }
+    const parts: string[][] = []
+    let current: string[] = []
+    let currentLen = 0
+    for (const line of block.lines) {
+      if (currentLen > 0 && currentLen + line.length + 1 > chunkChars) {
+        parts.push(current)
+        current = []
+        currentLen = 0
+      }
+      current.push(line)
+      currentLen += line.length + 1
+    }
+    if (current.length > 0) parts.push(current)
+    parts.forEach((lines, i) => expanded.push({ id: `${block.id} (part ${i + 1}/${parts.length})`, lines }))
+  }
+
+  const chunks: SessionBlock[][] = []
+  let chunk: SessionBlock[] = []
+  let chunkLen = 0
+  for (const block of expanded) {
+    const len = blockText(block).length
+    if (chunkLen > 0 && chunkLen + len > chunkChars) {
+      chunks.push(chunk)
+      chunk = []
+      chunkLen = 0
+    }
+    chunk.push(block)
+    chunkLen += len
+  }
+  if (chunk.length > 0) chunks.push(chunk)
+  return chunks
+}
+
+const COMPRESSION_PROMPT = `Condense the following transcript excerpt from a developer's Claude Code
+sessions. This is raw material for a later engineering-skill assessment: preserve every concrete,
+specific moment that shows how the developer reasoned (a hypothesis stated, a trade-off argued, a
+root cause found, an assumption challenged, Claude's claim verified or rejected, etc.) — these are
+the only evidence a later reviewer can cite. Cut only redundant restatement, routine tool-call
+noise, and filler. Keep it as a chronological narrative in the same "Human: ..." / "Claude: ..."
+turn format, in original order, not a bullet list of isolated facts — a decision made early and
+acted on later must still read as connected. Keep every "--- session <id> ---" marker exactly
+where it occurs. Output only the condensed transcript text, no commentary.
+
+Transcript excerpt:
+`
+
+async function compressChunk(
+  $: EngineInterface,
+  chunk: SessionBlock[],
+): Promise<{ text: string; usage: ModelUsage } | undefined> {
+  const result = await $.model
+    .complete({
+      model: 'haiku',
+      prompt: `${COMPRESSION_PROMPT}${chunksText(chunk)}`,
+      effort: 'low',
+      maxTokens: 4000,
+      timeoutMs: 60_000,
+    })
+    .catch(() => undefined)
+  if (!result || !result.isAnswered) return undefined
+  return { text: result.text.trim(), usage: result.usage }
+}
+
+function buildWindowTranscript(
+  chunks: SessionBlock[][],
+  compressed: (string | undefined)[],
+): { transcript: string; fellBackCount: number } {
+  let fellBackCount = 0
+  const parts = chunks.map((chunk, i) => {
+    const text = compressed[i]
+    if (text !== undefined) return text
+    fellBackCount += 1
+    return chunksText(chunk)
+  })
+  return { transcript: parts.join('\n\n'), fellBackCount }
+}
+
+function sumUsage(
+  compressionUsages: ModelUsage[],
+  final: ModelUsage,
+  context: { rawContextChars: number; sentContextChars: number; contextTruncated: boolean },
+): RunUsage {
+  const usage = [...compressionUsages, final].reduce(
+    (acc, u) => ({
+      inputTokens: acc.inputTokens + u.input_tokens,
+      outputTokens: acc.outputTokens + u.output_tokens,
+      cacheReadTokens: acc.cacheReadTokens + u.cache_read_input_tokens,
+      cacheCreationTokens: acc.cacheCreationTokens + u.cache_creation_input_tokens,
+    }),
+    { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+  )
+  return { ...usage, compressionCalls: compressionUsages.length || undefined, ...context }
+}
+
 const CONFIDENCE_VALUES = new Set<Confidence>(['High', 'Medium', 'Low'])
 
 function toMetricEntry(raw: unknown): MetricEntry {
@@ -448,6 +564,15 @@ function formatWindowRange(generatedAtIso: string, days: number): string {
   const start = new Date(end.getTime() - days * MS_PER_DAY)
   const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
   return `${fmt(start)} – ${fmt(end)}`
+}
+
+function formatContextLine(usage: RunUsage): string {
+  const sent = usage.sentContextChars.toLocaleString()
+  const base =
+    usage.sentContextChars === usage.rawContextChars
+      ? `Context: ${sent} chars sent`
+      : `Context: ${sent} of ${usage.rawContextChars.toLocaleString()} chars sent (condensed)`
+  return usage.contextTruncated ? `${base} — truncated, some content dropped` : base
 }
 
 function formatDelta(delta: number | null): string {
@@ -788,8 +913,14 @@ export const register: Register = on => {
               input tokens ({digest.usage.cacheReadTokens.toLocaleString()} from cache,{' '}
               {digest.usage.cacheCreationTokens.toLocaleString()} newly cached),{' '}
               {digest.usage.outputTokens.toLocaleString()} output tokens
+              {digest.usage.compressionCalls
+                ? ` (includes ${digest.usage.compressionCalls} compression pass${
+                    digest.usage.compressionCalls === 1 ? '' : 'es'
+                  })`
+                : ''}
             </Text>
           )}
+          {digest.usage && <Text color="subtle">{formatContextLine(digest.usage)}</Text>}
         </Box>
       </Box>
     )
@@ -818,35 +949,56 @@ export const register: Register = on => {
       return { text: `No Claude Code activity on this project in the last ${windowLabel}.` }
     }
 
-    const allLines: string[] = []
+    const sessionBlocks: SessionBlock[] = []
     for (const file of sessionFiles) {
       const lines = await readSessionLines($, `${projectDir}/${file.name}`, cutoffMs)
       if (lines.length === 0) continue
-      allLines.push(`--- session ${file.name.replace('.jsonl', '')} ---`, ...lines)
+      sessionBlocks.push({ id: file.name.replace('.jsonl', ''), lines })
     }
 
-    if (allLines.length === 0) {
+    if (sessionBlocks.length === 0) {
       return { text: `No Claude Code activity on this project in the last ${windowLabel}.` }
     }
 
-    let transcript = allLines.join('\n')
-    let truncatedNote = ''
+    let transcript = sessionBlocks.map(blockText).join('\n')
+    const rawContextChars = transcript.length
+    let note = ''
+    let contextTruncated = false
+    const compressionUsages: ModelUsage[] = []
+
     if (transcript.length > MAX_TRANSCRIPT_CHARS) {
-      transcript = transcript.slice(transcript.length - MAX_TRANSCRIPT_CHARS)
-      truncatedNote =
-        '\n\n(Note: the window held more conversation than fits here; this covers the most recent portion of it.)'
+      const chunks = chunkSessions(sessionBlocks, COMPRESSION_CHUNK_CHARS)
+      const compressedResults = await Promise.all(chunks.map(chunk => compressChunk($, chunk)))
+      for (const r of compressedResults) if (r) compressionUsages.push(r.usage)
+
+      const { transcript: assembled, fellBackCount } = buildWindowTranscript(
+        chunks,
+        compressedResults.map(r => r?.text),
+      )
+      transcript = assembled
+
+      if (fellBackCount > 0) {
+        note = `\n\n(Note: ${fellBackCount} of ${chunks.length} window segments could not be condensed and are included in full.)`
+      }
+
+      if (transcript.length > MAX_TRANSCRIPT_CHARS) {
+        transcript = transcript.slice(transcript.length - MAX_TRANSCRIPT_CHARS)
+        contextTruncated = true
+        note =
+          '\n\n(Note: the window held more conversation than fits here even after condensing; this covers the most recent portion of it.)'
+      }
     }
 
     const projectName = root.split('/').filter(Boolean).at(-1) ?? root
     const windowBlock = `Project: ${projectName}
 Window: last ${windowLabel} (${days} days)
-${truncatedNote}
+${note}
 
 Transcript:
 ${transcript}`
 
     const result = await $.model.complete({
-      model: 'sonnet',
+      model: await $.session.model(),
       prompt: [
         { text: RUBRIC_PROMPT, cache: true },
         { text: windowBlock },
@@ -865,12 +1017,11 @@ ${transcript}`
       return { text: "Couldn't parse the model's assessment this time — try again." }
     }
 
-    const usage: RunUsage = {
-      inputTokens: result.usage.input_tokens,
-      outputTokens: result.usage.output_tokens,
-      cacheReadTokens: result.usage.cache_read_input_tokens,
-      cacheCreationTokens: result.usage.cache_creation_input_tokens,
-    }
+    const usage = sumUsage(compressionUsages, result.usage, {
+      rawContextChars,
+      sentContextChars: transcript.length,
+      contextTruncated,
+    })
 
     const historyKey = `history:${root}:${days}`
     const entry: HistoryEntry = { timestamp: new Date().toISOString(), days, ...digest }
@@ -886,10 +1037,13 @@ ${transcript}`
     await $.ui.open({ id: PANE, title: 'Reasoning Review' })
 
     const totalInputTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens
-    const usageLine = `Tokens: ${totalInputTokens.toLocaleString()} in (${usage.cacheReadTokens.toLocaleString()} cached, ${usage.cacheCreationTokens.toLocaleString()} newly cached), ${usage.outputTokens.toLocaleString()} out`
+    const compressionClause = usage.compressionCalls
+      ? ` (includes ${usage.compressionCalls} compression pass${usage.compressionCalls === 1 ? '' : 'es'})`
+      : ''
+    const usageLine = `Tokens: ${totalInputTokens.toLocaleString()} in (${usage.cacheReadTokens.toLocaleString()} cached, ${usage.cacheCreationTokens.toLocaleString()} newly cached), ${usage.outputTokens.toLocaleString()} out${compressionClause}`
 
     return {
-      text: `Scorecard updated for the last ${windowLabel} — see the "Reasoning Review" pane.\nCurrent signal: ${digest.currentSignal ?? digest.level}\n${usageLine}`,
+      text: `Scorecard updated for the last ${windowLabel} — see the "Reasoning Review" pane.\nCurrent signal: ${digest.currentSignal ?? digest.level}\n${usageLine}\n${formatContextLine(usage)}`,
     }
   }).catch(($, e, next) =>
     next.called

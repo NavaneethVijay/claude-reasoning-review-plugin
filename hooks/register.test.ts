@@ -213,6 +213,7 @@ test('reports no activity when the project has no recent sessions', async ($, on
 test('parses the digest and opens the pane', async ($, on) => {
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'sonnet' }))
   mockSessionWithOneMessage(on)
 
   const digest = buildDigest()
@@ -240,6 +241,7 @@ test('parses the digest and opens the pane', async ($, on) => {
 test('excludes its own slash-command invocations from the evidence it sends the model', async ($, on) => {
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'sonnet' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   mockSessionWithCommandInvocationNoise(on)
 
@@ -264,6 +266,7 @@ test('excludes its own slash-command invocations from the evidence it sends the 
 test('runs twice in a row without error (persistence path)', async ($, on) => {
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project-trend' }))
+  on('session.model', () => ({ value: 'sonnet' }))
   mockSessionWithOneMessage(on)
   on('ui.open', () => ({ value: { isPlaced: true } }))
 
@@ -290,6 +293,7 @@ test('runs twice in a row without error (persistence path)', async ($, on) => {
 test('falls back gracefully when the model does not return valid JSON', async ($, on) => {
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'sonnet' }))
   mockSessionWithOneMessage(on)
 
   on('model.complete', () => ({
@@ -329,6 +333,7 @@ test('pane shows a placeholder before any scorecard has run', async $ => {
 test('populated pane opens on the Overview screen with a headline score and strongest/weakest callouts', async ($, on) => {
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'sonnet' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   mockSessionWithOneMessage(on)
 
@@ -362,6 +367,7 @@ test('populated pane opens on the Overview screen with a headline score and stro
 test('populated pane navigates into Metrics, shows rows collapsed, and expands evidence on press', async ($, on) => {
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'sonnet' }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   mockSessionWithOneMessage(on)
 
@@ -398,4 +404,234 @@ test('populated pane navigates into Metrics, shows rows collapsed, and expands e
   await ui.press({ key: 'back-to-overview' })
 
   expect(await ui.find({ text: /Developer Review/ })).toBeTruthy()
+})
+
+// --- adaptive compression (oversized windows) ---
+
+function usage(inputTokens: number, outputTokens: number) {
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+  }
+}
+
+function promptText(prompt: unknown): string {
+  return Array.isArray(prompt) ? prompt.map((b: { text: string }) => b.text).join('\n') : String(prompt)
+}
+
+// One message whose content alone is `charCount` characters, prefixed with `marker` so a
+// compression mock can identify which session/chunk it came from.
+function makeOneBigMessageFile(marker: string, charCount: number) {
+  const now = new Date().toISOString()
+  const padding = 'lorem ipsum filler text '.repeat(Math.ceil(charCount / 24)).slice(0, charCount - marker.length - 1)
+  const content = `${marker} ${padding}`
+  return JSON.stringify({ type: 'user', isSidechain: false, timestamp: now, message: { role: 'user', content } })
+}
+
+// A single session with many short lines, so a chunker that sub-splits a too-big session does so
+// between lines, not mid-line. `markerStart`/`markerEnd` tag the first and last line.
+function makeManyLineSessionFile(markerStart: string, markerEnd: string, lineCount: number, lineChars: number) {
+  const now = new Date().toISOString()
+  const lines: string[] = []
+  for (let i = 0; i < lineCount; i++) {
+    const label = i === 0 ? markerStart : i === lineCount - 1 ? markerEnd : `filler-${i}`
+    const content = `${label} ${'z'.repeat(Math.max(0, lineChars - label.length - 1))}`
+    lines.push(JSON.stringify({ type: 'user', isSidechain: false, timestamp: now, message: { role: 'user', content } }))
+  }
+  return lines.join('\n')
+}
+
+function mockMultiSessionFiles(on: any, files: { name: string; jsonl: string }[]) {
+  on('fs.list', () => ({
+    value: files.map(f => ({ name: f.name, kind: 'file', size: f.jsonl.length, mtimeMs: Date.now(), isLink: false })),
+  }))
+  on('fs.read', ($: unknown, e: { path: string }) => {
+    const name = e.path.split('/').pop()
+    return { value: files.find(f => f.name === name)?.jsonl ?? '' }
+  })
+}
+
+const MARKERS = ['EARLY_MARKER', 'MID_MARKER_1', 'MID_MARKER_2', 'LATE_MARKER']
+
+function mockFourOversizedSessions(on: any) {
+  mockMultiSessionFiles(
+    on,
+    MARKERS.map((marker, i) => ({ name: `${String.fromCharCode(97 + i)}.jsonl`, jsonl: makeOneBigMessageFile(marker, 50_000) })),
+  )
+}
+
+test('compresses an oversized window and keeps evidence from both the earliest and latest session', async ($, on) => {
+  mock.env(on, { HOME: '/home/test' })
+  on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'sonnet' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  mockFourOversizedSessions(on)
+
+  let compressionCalls = 0
+  let finalPrompt = ''
+  on('model.complete', ($, e) => {
+    const text = promptText(e.prompt)
+    if (e.model === 'haiku') {
+      compressionCalls++
+      const marker = MARKERS.find(m => text.includes(m)) ?? 'NONE'
+      return { value: { isAnswered: true, text: `Human: condensed excerpt preserving ${marker}`, usage: usage(10, 5) } }
+    }
+    finalPrompt = text
+    return { value: { isAnswered: true, text: JSON.stringify(buildDigest()), usage: usage(20, 10) } }
+  })
+
+  const result = await $.command.run({ command: 'reasoning-review', args: 'week' })
+
+  expect(compressionCalls).toBeGreaterThan(0)
+  expect(finalPrompt).toContain('EARLY_MARKER')
+  expect(finalPrompt).toContain('LATE_MARKER')
+  expect(result.text).toContain('Reasoning Review')
+})
+
+test('sub-chunks a single session that alone exceeds the chunk budget, preserving order', async ($, on) => {
+  mock.env(on, { HOME: '/home/test' })
+  on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'sonnet' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  mockMultiSessionFiles(on, [
+    { name: 'giant.jsonl', jsonl: makeManyLineSessionFile('EARLY_IN_SESSION', 'LATE_IN_SESSION', 50, 5000) },
+  ])
+
+  let compressionCalls = 0
+  let finalPrompt = ''
+  on('model.complete', ($, e) => {
+    const text = promptText(e.prompt)
+    if (e.model === 'haiku') {
+      compressionCalls++
+      const marker = text.includes('EARLY_IN_SESSION')
+        ? 'EARLY_IN_SESSION'
+        : text.includes('LATE_IN_SESSION')
+          ? 'LATE_IN_SESSION'
+          : 'MIDDLE'
+      return { value: { isAnswered: true, text: `Human: condensed excerpt preserving ${marker}`, usage: usage(10, 5) } }
+    }
+    finalPrompt = text
+    return { value: { isAnswered: true, text: JSON.stringify(buildDigest()), usage: usage(20, 10) } }
+  })
+
+  await $.command.run({ command: 'reasoning-review', args: 'week' })
+
+  expect(compressionCalls).toBeGreaterThan(1)
+  const earlyIndex = finalPrompt.indexOf('EARLY_IN_SESSION')
+  const lateIndex = finalPrompt.indexOf('LATE_IN_SESSION')
+  expect(earlyIndex).toBeGreaterThan(-1)
+  expect(lateIndex).toBeGreaterThan(-1)
+  expect(earlyIndex).toBeLessThan(lateIndex)
+})
+
+test('falls back to a chunk\'s raw text when its compression call fails, and still completes', async ($, on) => {
+  mock.env(on, { HOME: '/home/test' })
+  on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'sonnet' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  mockFourOversizedSessions(on)
+
+  let finalPrompt = ''
+  on('model.complete', ($, e) => {
+    const text = promptText(e.prompt)
+    if (e.model === 'haiku') {
+      if (text.includes('MID_MARKER_1')) return { value: { isAnswered: false, reason: 'api-error' } }
+      const marker = MARKERS.find(m => text.includes(m)) ?? 'NONE'
+      return { value: { isAnswered: true, text: `Human: condensed excerpt preserving ${marker}`, usage: usage(10, 5) } }
+    }
+    finalPrompt = text
+    return { value: { isAnswered: true, text: JSON.stringify(buildDigest()), usage: usage(20, 10) } }
+  })
+
+  const result = await $.command.run({ command: 'reasoning-review', args: 'week' })
+
+  expect(result.text).toContain('Reasoning Review')
+  expect(result.text).not.toContain('unexpected error')
+  // the failed chunk's own raw (uncompressed) text survives, marker and all
+  expect(finalPrompt).toContain('MID_MARKER_1')
+  // the other three chunks were condensed rather than kept raw
+  expect(finalPrompt).toContain('EARLY_MARKER')
+  expect(finalPrompt).toContain('LATE_MARKER')
+})
+
+test('aggregates token usage across all compression calls plus the final call', async ($, on) => {
+  mock.env(on, { HOME: '/home/test' })
+  on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'sonnet' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  mockFourOversizedSessions(on)
+
+  on('model.complete', ($, e) => {
+    if (e.model === 'haiku') {
+      return { value: { isAnswered: true, text: 'Human: condensed excerpt.', usage: usage(100, 20) } }
+    }
+    return { value: { isAnswered: true, text: JSON.stringify(buildDigest()), usage: usage(500, 200) } }
+  })
+
+  const result = await $.command.run({ command: 'reasoning-review', args: 'week' })
+
+  // 4 compression calls @ 100 in / 20 out, plus 1 final call @ 500 in / 200 out
+  expect(result.text).toContain('900 in')
+  expect(result.text).toContain('280 out')
+  expect(result.text).toContain('includes 4 compression passes')
+})
+
+test("uses the session's own model for the final scoring call, while compression stays on haiku", async ($, on) => {
+  mock.env(on, { HOME: '/home/test' })
+  on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'opus' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  mockFourOversizedSessions(on)
+
+  const modelsSeen: string[] = []
+  on('model.complete', ($, e) => {
+    modelsSeen.push(e.model)
+    if (typeof e.prompt === 'string') {
+      return { value: { isAnswered: true, text: 'Human: condensed excerpt.', usage: usage(10, 5) } }
+    }
+    return { value: { isAnswered: true, text: JSON.stringify(buildDigest()), usage: usage(20, 10) } }
+  })
+
+  await $.command.run({ command: 'reasoning-review', args: 'week' })
+
+  expect(modelsSeen.filter(m => m === 'haiku').length).toBe(4)
+  expect(modelsSeen.filter(m => m === 'opus').length).toBe(1)
+})
+
+test('reports context length sent vs. raw when nothing needed compressing', async ($, on) => {
+  mock.env(on, { HOME: '/home/test' })
+  on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'sonnet' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  mockSessionWithOneMessage(on)
+
+  on('model.complete', () => ({
+    value: { isAnswered: true, text: JSON.stringify(buildDigest()), usage: usage(20, 10) },
+  }))
+
+  const result = await $.command.run({ command: 'reasoning-review', args: 'week' })
+
+  expect(result.text).toMatch(/Context: [\d,]+ chars sent/)
+  expect(result.text).not.toContain('condensed')
+})
+
+test('reports a smaller sent length than raw length when the window was condensed', async ($, on) => {
+  mock.env(on, { HOME: '/home/test' })
+  on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'sonnet' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  mockFourOversizedSessions(on)
+
+  on('model.complete', ($, e) => {
+    if (e.model === 'haiku') {
+      return { value: { isAnswered: true, text: 'Human: condensed excerpt.', usage: usage(10, 5) } }
+    }
+    return { value: { isAnswered: true, text: JSON.stringify(buildDigest()), usage: usage(20, 10) } }
+  })
+
+  const result = await $.command.run({ command: 'reasoning-review', args: 'week' })
+
+  expect(result.text).toMatch(/Context: [\d,]+ of [\d,]+ chars sent \(condensed\)/)
 })
