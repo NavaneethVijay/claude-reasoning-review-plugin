@@ -1,6 +1,6 @@
 # reasoning-review
 
-A Claude Code plugin that answers one question: **how have you actually been reasoning while
+A Claude Code **mod** that answers one question: **how have you actually been reasoning while
 working with Claude, on this project, lately?**
 
 Run `/reasoning-review week` or `/reasoning-review month` and it reads your own Claude Code session
@@ -10,10 +10,17 @@ in concrete evidence from what you actually typed and did, not a generic product
 It's for self-growth, not performance review by someone else: nobody but the person who runs it
 ever sees the result.
 
+> **This is a mod, not a plain plugin.** A mod registers its command dynamically from code
+> (`hooks/hooks.json` + `$.command.register`), not from a static `commands/*.md` file, which is what
+> lets it read your session history, call the model directly, and keep trend history across runs —
+> see [What it reads, what it costs, where it goes](#what-it-reads-what-it-costs-where-it-goes). The
+> trade-off: it needs a Claude Code host new enough to support mods. See
+> [Requirements](#requirements) before you install.
+
 ## Why
 
 LLM-assisted coding makes it easy to ship things without knowing whether *you* did the reasoning or
-the model did. This plugin tries to surface that honestly: it specifically scores **AI Agency** —
+the model did. This mod tries to surface that honestly: it specifically scores **AI Agency** —
 how much of the thinking was genuinely yours vs. accepted from Claude without challenge — alongside
 the usual technical metrics, because that's the axis that most separates someone who looks senior
 from someone who is operating at that level independently.
@@ -149,12 +156,13 @@ The report's gap line always says, concretely, what would need to show up to jus
 /plugin install reasoning-review --marketplace NavaneethVijay/claude-reasoning-review-plugin
 ```
 
-Pick the **user** scope so it's available in every project.
+(`/plugin install` is the right command for a mod too — a mod is still installed and managed as a
+plugin; it's only how it registers its command and what it can do at runtime that's different from
+a plain commands/*.md-only plugin.) Pick the **user** scope so it's available in every project.
 
 ### Requirements
 
-This plugin is a **mod** (it registers `/reasoning-review` dynamically from code, not a static
-`commands/*.md` file), so it needs mods support:
+Being a mod, this needs mod support in the Claude Code host you're running it in:
 
 - **Terminal**: Claude Code **v2.1.287+**. Check with `claude --version`.
 - **Desktop app**: **v2.1.286+**. Check with `/status` (the **Claude Code** row).
@@ -255,12 +263,15 @@ With no recent activity on the current project, it says so plainly instead of fa
   *"Your Claude Code version is too old to run /reasoning-review — ... Update Claude Code to the
   latest version and try again."* This was most commonly hit through the VS Code extension, whose
   embedded engine lags the CLI's release cadence.
-- **Root-caused "installed but doesn't invoke" reports.** Not a plugin bug: this plugin is a *mod*
-  (dynamic command registration via `hooks.json` + code, not a static `commands/*.md` file), which
-  needs Claude Code v2.1.287+ (terminal) or v2.1.286+ (Desktop app) — see Requirements and Supported
-  usage above. "Installed"/listed and "mod loaded" are different signals; the self-diagnosis path
-  (the `mods active` line in `/plugin`, `claude plugin test`, the debug log) is now documented above
-  instead of being rediscovered per bug report.
+- **Root-caused "installed but doesn't invoke" reports, and made the mod/plugin distinction explicit
+  in this README.** Not a bug in the code: this is a *mod* (dynamic command registration via
+  `hooks.json` + code, not a static `commands/*.md` file), which needs Claude Code v2.1.287+
+  (terminal) or v2.1.286+ (Desktop app) — see Requirements and Supported usage above. Previously the
+  README only said "plugin" throughout and buried the mod distinction in the Install section, which
+  is exactly backwards from how confusing it is in practice — it's now called out at the top.
+  "Installed"/listed and "mod loaded" are different signals; the self-diagnosis path (the `mods
+  active` line in `/plugin`, `claude plugin test`, the debug log) is documented above instead of
+  being rediscovered per bug report.
 
 ## Developing
 
