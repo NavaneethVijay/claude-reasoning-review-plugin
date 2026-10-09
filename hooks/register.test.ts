@@ -1,6 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 
-import { buildViewDigest, parseDigest, trendOf } from './register'
+import { buildViewDigest, isModelCompleteHostCheckFailure, parseDigest, trendOf } from './register'
 
 const PROJECT_DIR = '/home/test/.claude/projects/-work-project'
 
@@ -181,6 +181,13 @@ test('toMetricEntry-via-parseDigest preserves confidence and observationCount, i
   expect(digest?.metrics.Testing.confidence).toBeUndefined()
 })
 
+test('isModelCompleteHostCheckFailure recognizes the host schema-mismatch error and nothing else', () => {
+  expect(isModelCompleteHostCheckFailure(new Error('reasoning-review: model.complete: takes { model, prompt } (host check)'))).toBe(true)
+  expect(isModelCompleteHostCheckFailure(new Error('some other model.complete failure'))).toBe(false)
+  expect(isModelCompleteHostCheckFailure(new Error('tool.call: denied (host check)'))).toBe(false)
+  expect(isModelCompleteHostCheckFailure('not an Error instance')).toBe(false)
+})
+
 // --- engine-level tests ---
 
 test('registers the /reasoning-review command on session start', async ($, on) => {
@@ -210,7 +217,7 @@ test('reports no activity when the project has no recent sessions', async ($, on
   expect(result.text).toContain('No Claude Code activity')
 })
 
-test('parses the digest and opens the pane', async ($, on) => {
+test('parses the digest and returns the full markdown report', async ($, on) => {
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
   on('session.model', () => ({ value: 'sonnet' }))
@@ -225,24 +232,17 @@ test('parses the digest and opens the pane', async ($, on) => {
     },
   }))
 
-  let opened: string | undefined
-  on('ui.open', ($, e) => {
-    opened = e.id
-    return { value: { isPlaced: true } }
-  })
-
   const result = await $.command.run({ command: 'reasoning-review', args: 'week' })
 
-  expect(opened).toBe('reasoning-review')
-  expect(result.text).toContain('Reasoning Review')
+  expect(result.text).toContain('Developer Review')
   expect(result.text).toContain('Strong Senior, showing Staff-level architecture behaviour.')
+  expect(result.text).toContain('Challenged the proposed abstraction before implementation.')
 })
 
 test('excludes its own slash-command invocations from the evidence it sends the model', async ($, on) => {
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
   on('session.model', () => ({ value: 'sonnet' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
   mockSessionWithCommandInvocationNoise(on)
 
   let promptSeen = ''
@@ -268,7 +268,6 @@ test('runs twice in a row without error (persistence path)', async ($, on) => {
   on('session.root', () => ({ value: '/work/project-trend' }))
   on('session.model', () => ({ value: 'sonnet' }))
   mockSessionWithOneMessage(on)
-  on('ui.open', () => ({ value: { isPlaced: true } }))
 
   const digests = [
     buildDigest({ architecture: 7, debugging: 7.4 }),
@@ -284,10 +283,10 @@ test('runs twice in a row without error (persistence path)', async ($, on) => {
   }))
 
   const first = await $.command.run({ command: 'reasoning-review', args: 'week' })
-  expect(first.text).toContain('Reasoning Review')
+  expect(first.text).toContain('Developer Review')
 
   const second = await $.command.run({ command: 'reasoning-review', args: 'week' })
-  expect(second.text).toContain('Reasoning Review')
+  expect(second.text).toContain('Developer Review')
 })
 
 test('falls back gracefully when the model does not return valid JSON', async ($, on) => {
@@ -309,32 +308,10 @@ test('falls back gracefully when the model does not return valid JSON', async ($
   expect(result.text).toContain("Couldn't parse")
 })
 
-const PANE_PROPS = {
-  title: 'Reasoning Review',
-  isFocused: false,
-  bodyColumns: 80,
-  placement: 'inline' as const,
-  scroll: { offset: 0, bodyRows: 40 },
-  view: {},
-}
-
-test('pane shows a placeholder before any scorecard has run', async $ => {
-  const ui = await $.ui.mount({
-    plugin: 'reasoning-review',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'reasoning-review',
-    props: PANE_PROPS,
-  })
-
-  expect(await ui.find({ text: /Run \/reasoning-review/ })).toBeTruthy()
-})
-
-test('populated pane opens on the Overview screen with a headline score and strongest/weakest callouts', async ($, on) => {
+test('returns a full report with headline score, strongest/weakest callouts, and per-metric evidence', async ($, on) => {
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
   on('session.model', () => ({ value: 'sonnet' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
   mockSessionWithOneMessage(on)
 
   const digest = buildDigest()
@@ -346,64 +323,15 @@ test('populated pane opens on the Overview screen with a headline score and stro
     },
   }))
 
-  await $.command.run({ command: 'reasoning-review', args: 'week' })
+  const result = await $.command.run({ command: 'reasoning-review', args: 'week' })
 
-  const ui = await $.ui.mount({
-    plugin: 'reasoning-review',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'reasoning-review',
-    props: PANE_PROPS,
-  })
-
-  expect(await ui.find({ text: /Developer Review/ })).toBeTruthy()
-  expect(await ui.find({ text: /Engineering Capability/ })).toBeTruthy()
-  expect(await ui.find({ text: /Strongest/ })).toBeTruthy()
-  expect(await ui.find({ text: /Needs attention/ })).toBeTruthy()
-  // The Metrics screen's content isn't rendered until navigated to.
-  expect(await ui.find({ text: /Challenged the proposed abstraction/ })).toBeFalsy()
-})
-
-test('populated pane navigates into Metrics, shows rows collapsed, and expands evidence on press', async ($, on) => {
-  mock.env(on, { HOME: '/home/test' })
-  on('session.root', () => ({ value: '/work/project' }))
-  on('session.model', () => ({ value: 'sonnet' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  mockSessionWithOneMessage(on)
-
-  const digest = buildDigest()
-  on('model.complete', () => ({
-    value: {
-      isAnswered: true,
-      text: JSON.stringify(digest),
-      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-    },
-  }))
-
-  await $.command.run({ command: 'reasoning-review', args: 'week' })
-
-  const ui = await $.ui.mount({
-    plugin: 'reasoning-review',
-    surface: 'terminal',
-    component: 'Pane',
-    requestId: 'reasoning-review',
-    props: PANE_PROPS,
-  })
-
-  await ui.press({ key: 'view-full-review' })
-
-  expect(await ui.find({ text: /Architecture/ })).toBeTruthy()
-  expect(await ui.find({ text: /Challenged the proposed abstraction/ })).toBeFalsy()
-  expect(await ui.find({ text: /leans toward the next or previous band/ })).toBeTruthy()
-
-  await ui.press({ key: 'Architecture' })
-
-  expect(await ui.find({ text: /Challenged the proposed abstraction/ })).toBeTruthy()
-  expect(await ui.find({ text: /Why this score\?/ })).toBeTruthy()
-
-  await ui.press({ key: 'back-to-overview' })
-
-  expect(await ui.find({ text: /Developer Review/ })).toBeTruthy()
+  expect(result.text).toContain('Developer Review')
+  expect(result.text).toContain('Engineering Capability')
+  expect(result.text).toContain('Strongest')
+  expect(result.text).toContain('Needs attention')
+  expect(result.text).toContain('Architecture')
+  expect(result.text).toContain('Challenged the proposed abstraction before implementation.')
+  expect(result.text).toContain('leans toward the next or previous band')
 })
 
 // --- adaptive compression (oversized windows) ---
@@ -466,7 +394,6 @@ test('compresses an oversized window and keeps evidence from both the earliest a
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
   on('session.model', () => ({ value: 'sonnet' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
   mockFourOversizedSessions(on)
 
   let compressionCalls = 0
@@ -487,14 +414,13 @@ test('compresses an oversized window and keeps evidence from both the earliest a
   expect(compressionCalls).toBeGreaterThan(0)
   expect(finalPrompt).toContain('EARLY_MARKER')
   expect(finalPrompt).toContain('LATE_MARKER')
-  expect(result.text).toContain('Reasoning Review')
+  expect(result.text).toContain('Developer Review')
 })
 
 test('sub-chunks a single session that alone exceeds the chunk budget, preserving order', async ($, on) => {
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
   on('session.model', () => ({ value: 'sonnet' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
   mockMultiSessionFiles(on, [
     { name: 'giant.jsonl', jsonl: makeManyLineSessionFile('EARLY_IN_SESSION', 'LATE_IN_SESSION', 50, 5000) },
   ])
@@ -530,7 +456,6 @@ test('falls back to a chunk\'s raw text when its compression call fails, and sti
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
   on('session.model', () => ({ value: 'sonnet' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
   mockFourOversizedSessions(on)
 
   let finalPrompt = ''
@@ -547,7 +472,7 @@ test('falls back to a chunk\'s raw text when its compression call fails, and sti
 
   const result = await $.command.run({ command: 'reasoning-review', args: 'week' })
 
-  expect(result.text).toContain('Reasoning Review')
+  expect(result.text).toContain('Developer Review')
   expect(result.text).not.toContain('unexpected error')
   // the failed chunk's own raw (uncompressed) text survives, marker and all
   expect(finalPrompt).toContain('MID_MARKER_1')
@@ -560,7 +485,6 @@ test('aggregates token usage across all compression calls plus the final call', 
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
   on('session.model', () => ({ value: 'sonnet' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
   mockFourOversizedSessions(on)
 
   on('model.complete', ($, e) => {
@@ -582,7 +506,6 @@ test("uses the session's own model for the final scoring call, while compression
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
   on('session.model', () => ({ value: 'opus' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
   mockFourOversizedSessions(on)
 
   const modelsSeen: string[] = []
@@ -604,7 +527,6 @@ test('reports context length sent vs. raw when nothing needed compressing', asyn
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
   on('session.model', () => ({ value: 'sonnet' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
   mockSessionWithOneMessage(on)
 
   on('model.complete', () => ({
@@ -621,7 +543,6 @@ test('reports a smaller sent length than raw length when the window was condense
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))
   on('session.model', () => ({ value: 'sonnet' }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
   mockFourOversizedSessions(on)
 
   on('model.complete', ($, e) => {

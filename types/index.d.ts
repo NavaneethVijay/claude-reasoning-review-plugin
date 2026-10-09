@@ -58,15 +58,3 @@ export type ViewDigest = {
   generatedAt: string
   days: number
 }
-
-export type Screen = 'overview' | 'metrics'
-
-declare module 'claude-code' {
-  interface PluginState {
-    'reasoning-review': {
-      digest: ViewDigest | null
-      expanded: Record<string, boolean>
-      screen: Screen
-    }
-  }
-}

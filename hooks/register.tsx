@@ -1,5 +1,4 @@
-import { atom, read, update } from 'claude-code'
-import type { Elements, EngineInterface, ModelUsage, Register } from 'claude-code'
+import type { EngineInterface, ModelUsage, Register } from 'claude-code'
 
 import type {
   Confidence,
@@ -8,7 +7,6 @@ import type {
   MetricEntry,
   ReportBuckets,
   RunUsage,
-  Screen,
   ViewDigest,
   ViewMetric,
 } from '../types'
@@ -16,7 +14,6 @@ import type {
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 const MAX_TRANSCRIPT_CHARS = 180_000
 const COMPRESSION_CHUNK_CHARS = 60_000
-const PANE = 'reasoning-review'
 const TREND_EPSILON = 0.4
 const NEEDS_ATTENTION_MAX = 4
 
@@ -271,6 +268,20 @@ exactly this shape (use these exact keys; a metric with no evidence gets "score"
   "currentSignal": "<short phrase, e.g. 'Strong Senior, showing Staff-level architecture behaviour'>",
   "focusNext": "<short phrase naming the single most useful thing to work on next>"
 }`
+
+// Older Claude Code hosts validate a plugin's $.model.complete call against a narrower schema and
+// reject anything beyond { model, prompt } with "<plugin>: model.complete: takes { model, prompt }
+// (host check)" — not a model/provider failure, a host-version mismatch this plugin can't work
+// around (effort/maxTokens/timeoutMs aren't accepted at all), so it's surfaced as its own message
+// rather than retried with a request that would just truncate the reply and fail to parse anyway.
+export function isModelCompleteHostCheckFailure(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('model.complete') && err.message.includes('host check')
+}
+
+const HOST_VERSION_MESSAGE =
+  "Your Claude Code version is too old to run /reasoning-review — it doesn't yet support the " +
+  'model.complete options this plugin needs (effort, maxTokens, timeoutMs). Update Claude Code to ' +
+  'the latest version and try again.'
 
 function windowDays(args: string): number {
   return args.trim().toLowerCase() === 'month' ? 30 : 7
@@ -609,31 +620,6 @@ function weakestMetric(metrics: Record<string, ViewMetric>): readonly [string, V
   return worst
 }
 
-const digestAtom = atom({ plugin: 'reasoning-review', key: 'digest' } as const, null as ViewDigest | null)
-const expandedAtom = atom({ plugin: 'reasoning-review', key: 'expanded' } as const, {} as Record<string, boolean>)
-const screenAtom = atom({ plugin: 'reasoning-review', key: 'screen' } as const, 'overview' as Screen)
-
-function scoreColor(score: number | null): string {
-  if (score === null) return 'subtle'
-  if (score >= 8) return 'success'
-  if (score >= 6) return 'text'
-  if (score >= 4) return 'warning'
-  return 'error'
-}
-
-function trendColor(trend: ViewMetric['trend']): string {
-  if (trend === '↑') return 'success'
-  if (trend === '↓') return 'error'
-  return 'subtle'
-}
-
-function confidenceColor(confidence: Confidence | undefined): string {
-  if (confidence === 'High') return 'success'
-  if (confidence === 'Medium') return 'warning'
-  if (confidence === 'Low') return 'error'
-  return 'subtle'
-}
-
 function evidenceLabel(confidence: Confidence | undefined): string {
   if (confidence === 'High') return 'Strong evidence'
   if (confidence === 'Medium') return 'Some evidence'
@@ -641,90 +627,114 @@ function evidenceLabel(confidence: Confidence | undefined): string {
   return 'Evidence'
 }
 
-function renderRow(
-  { Box, Button, Text }: Elements['terminal'],
-  name: string,
-  metric: ViewMetric,
-  isExpanded: boolean,
-  toggle: () => void,
-) {
-  const scoreText = metric.score === null ? ' — ' : metric.score.toFixed(1).padStart(4)
+function renderMetricSection(name: string, metric: ViewMetric): string {
+  const scoreText = metric.score === null ? '—' : metric.score.toFixed(1)
   const deltaText = formatDelta(metric.delta)
   const observationCount = metric.observationCount ?? metric.evidence.length
-  const DIVIDER = '─'.repeat(34)
+  const previousText = metric.previousScore === null ? '—' : metric.previousScore.toFixed(1)
 
-  return (
-    <Box flexDirection="column" marginBottom={1} key={name}>
-      <Box flexDirection="row">
-        <Button plain key={name} label={isExpanded ? '▾' : '▸'} onPress={toggle} />
-        <Text> {name.padEnd(24)}</Text>
-        <Text color={scoreColor(metric.score)} bold>
-          {scoreText}
-        </Text>
-        <Text>  </Text>
-        <Text color={trendColor(metric.trend)} bold>
-          {metric.trend ?? ' '}
-        </Text>
-        {deltaText && (
-          <Text color={trendColor(metric.trend)}> {deltaText}</Text>
-        )}
-      </Box>
-      <Box marginLeft={3}>
-        <Text color={scoreColor(metric.score)}>{barText(metric.score)}</Text>
-      </Box>
-      {isExpanded && (
-        <Box flexDirection="column" marginLeft={3} marginTop={1}>
-          <Text bold>Why this score?</Text>
-          <Text color="subtle">{DIVIDER}</Text>
-          <Box marginTop={1} flexDirection="column">
-            <Text bold>{evidenceLabel(metric.confidence)}</Text>
-            {metric.evidence.length === 0 && <Text dimColor>  (none recorded)</Text>}
-            {metric.evidence.map(item => (
-              <Text key={item} color="success">
-                ✓ {item}
-              </Text>
-            ))}
-            {metric.assessment && (
-              <Text color="subtle" italic>
-                {metric.assessment}
-              </Text>
-            )}
-          </Box>
-          <Text color="subtle">{DIVIDER}</Text>
-          <Text>
-            Previous: {metric.previousScore === null ? '—' : metric.previousScore.toFixed(1)}
-            {'   '}
-            Current: {metric.score === null ? '—' : metric.score.toFixed(1)}
-          </Text>
-          <Box marginTop={1}>
-            <Text>
-              {observationCount} observation{observationCount === 1 ? '' : 's'}
-            </Text>
-          </Box>
-          <Text>
-            Confidence:{' '}
-            <Text color={confidenceColor(metric.confidence)} bold>
-              {metric.confidence ?? '—'}
-            </Text>
-          </Text>
-        </Box>
-      )}
-    </Box>
-  )
+  const lines = [
+    `#### ${name} — ${scoreText}${metric.trend ? ` ${metric.trend}` : ''}${deltaText ? ` (${deltaText})` : ''}${metric.confidence ? ` · Confidence: ${metric.confidence}` : ''}`,
+    barText(metric.score),
+  ]
+
+  if (metric.assessment) lines.push('', metric.assessment)
+
+  lines.push('', `**${evidenceLabel(metric.confidence)}**`)
+  if (metric.evidence.length === 0) {
+    lines.push('_(none recorded)_')
+  } else {
+    for (const item of metric.evidence) lines.push(`- ${item}`)
+  }
+
+  lines.push('', `Previous: ${previousText} · Current: ${scoreText} · ${observationCount} observation${observationCount === 1 ? '' : 's'}`)
+
+  return lines.join('\n')
 }
 
-function renderReportList({ Box, Text }: Elements['terminal'], label: string, color: string, items: string[]) {
-  if (items.length === 0) return null
-  return (
-    <Box flexDirection="column" marginBottom={1} key={label}>
-      <Text color={color} bold>
-        {label}
-      </Text>
-      {items.map(item => (
-        <Text key={item}> • {item}</Text>
-      ))}
-    </Box>
+function renderReportLine(label: string, items: string[]): string | undefined {
+  if (items.length === 0) return undefined
+  return `**${label}:** ${items.join(', ')}`
+}
+
+function renderMarkdown(digest: ViewDigest, windowLabel: string): string {
+  const capability = digest.overall['Engineering Capability']
+  const strongest = strongestMetric(digest.metrics)
+  const weakest = weakestMetric(digest.metrics)
+
+  const lines: string[] = []
+
+  lines.push(`## Developer Review — ${formatWindowRange(digest.generatedAt, digest.days)} (${windowLabel})`)
+  lines.push('')
+  lines.push(`**Level:** ${digest.level}${digest.levelConfidence ? ` (confidence: ${digest.levelConfidence})` : ''}`)
+  if (digest.currentSignal) lines.push(digest.currentSignal)
+  if (capability?.score !== null && capability !== undefined) {
+    lines.push(
+      `**Engineering Capability:** ${capability.score!.toFixed(1)}${capability.trend ? ` ${capability.trend}` : ''}${formatDelta(capability.delta) ? ` (${formatDelta(capability.delta)})` : ''}`,
+    )
+  }
+
+  if (digest.narrative) lines.push('', '### What changed', digest.narrative)
+
+  if (strongest) lines.push('', `**Strongest:** ${strongest[0]} — ${strongest[1].score!.toFixed(1)}${strongest[1].trend ? ` ${strongest[1].trend}` : ''}`)
+  if (weakest) lines.push(`**Needs attention:** ${weakest[0]} — ${weakest[1].score!.toFixed(1)}${weakest[1].trend ? ` ${weakest[1].trend}` : ''}`)
+
+  if (digest.focusNext) lines.push('', `**Focus next:** ${digest.focusNext}`)
+  if (digest.gap) lines.push(`**Gap to next level:** ${digest.gap}`)
+
+  lines.push('', '---', '', '### Summary')
+  const summaryLines = [
+    renderReportLine('Improved', digest.report.improved),
+    renderReportLine('Declined', digest.report.declined),
+    renderReportLine('Consistent', digest.report.consistent),
+    renderReportLine('Needs attention', digest.report.needsAttention),
+  ].filter((line): line is string => line !== undefined)
+  if (summaryLines.length === 0) {
+    lines.push('No prior window to compare against yet — run this again next period for trends.')
+  } else {
+    lines.push(...summaryLines)
+  }
+  if (digest.report.noSignal.length > 0) {
+    lines.push('', `Insufficient evidence this window (no score given, not guessed): ${digest.report.noSignal.join(', ')}`)
+  }
+
+  const scoredMetrics = METRICS.map(([name]) => [name, digest.metrics[name]] as const).filter(
+    (row): row is readonly [string, ViewMetric] => row[1]?.score !== null,
   )
+  if (scoredMetrics.length > 0) {
+    lines.push('', '---', '', '### Engineering signals')
+    for (const [name, metric] of scoredMetrics) lines.push('', renderMetricSection(name, metric))
+  }
+
+  const scoredOverall = OVERALL_KEYS.map(key => [key, digest.overall[key]] as const).filter(
+    (row): row is readonly [string, ViewMetric] => row[1]?.score !== null,
+  )
+  if (scoredOverall.length > 0) {
+    lines.push('', '---', '', '### Overall')
+    for (const [name, metric] of scoredOverall) lines.push('', renderMetricSection(name, metric))
+  }
+
+  lines.push(
+    '',
+    '---',
+    '',
+    'Bands: Junior → Mid-level → Senior → Staff → Lead/Architect. A trailing + or - means the ' +
+      'evidence leans toward the next or previous band, not a clean fit for one.',
+  )
+
+  if (digest.usage) {
+    const usage = digest.usage
+    const totalInputTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens
+    const compressionClause = usage.compressionCalls
+      ? ` (includes ${usage.compressionCalls} compression pass${usage.compressionCalls === 1 ? '' : 'es'})`
+      : ''
+    lines.push(
+      `Last run: ${totalInputTokens.toLocaleString()} input tokens (${usage.cacheReadTokens.toLocaleString()} from cache, ${usage.cacheCreationTokens.toLocaleString()} newly cached), ${usage.outputTokens.toLocaleString()} output tokens${compressionClause}`,
+      formatContextLine(usage),
+    )
+  }
+
+  return lines.join('\n')
 }
 
 export const register: Register = on => {
@@ -735,195 +745,6 @@ export const register: Register = on => {
       argumentHint: '<week|month>',
     })
     return next(e)
-  })
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const components = $.ui.resolve(e)
-    const { Box, Text, Button } = components
-    const digest = await read($, digestAtom)
-    const expanded = await read($, expandedAtom)
-    const screen = await read($, screenAtom)
-
-    if (!digest) {
-      return (
-        <Box flexDirection="column">
-          <Text dimColor>Run /reasoning-review week (or month) to generate a scorecard.</Text>
-        </Box>
-      )
-    }
-
-    const toggle = (name: string) => () => update($, expandedAtom, cur => ({ ...cur, [name]: !cur[name] }))
-    const goToScreen = (next: Screen) => () => update($, screenAtom, () => next)
-    const DIVIDER = '─'.repeat(44)
-    const sectionHeader = (title: string) => (
-      <Box flexDirection="column" marginTop={2} marginBottom={1}>
-        <Text color="claude" bold>
-          {title}
-        </Text>
-        <Text color="subtle">{DIVIDER}</Text>
-      </Box>
-    )
-
-    if (screen === 'overview') {
-      const capability = digest.overall['Engineering Capability']
-      const strongest = strongestMetric(digest.metrics)
-      const weakest = weakestMetric(digest.metrics)
-      const whatChanged = digest.narrative ?? digest.currentSignal
-
-      return (
-        <Box flexDirection="column">
-          <Text bold color="claude">
-            Developer Review
-          </Text>
-          <Text color="subtle">{formatWindowRange(digest.generatedAt, digest.days)}</Text>
-
-          {capability?.score !== null && (
-            <Box flexDirection="column" marginTop={2}>
-              <Text color="subtle">Engineering Capability</Text>
-              <Box flexDirection="row">
-                <Text bold color={scoreColor(capability.score)}>
-                  {capability.score!.toFixed(1)}
-                </Text>
-                <Text>  </Text>
-                <Text color={trendColor(capability.trend)} bold>
-                  {capability.trend ?? ' '} {formatDelta(capability.delta)}
-                </Text>
-              </Box>
-            </Box>
-          )}
-
-          <Box marginTop={1}>
-            <Text color="subtle">{DIVIDER}</Text>
-          </Box>
-
-          {whatChanged && (
-            <Box flexDirection="column" marginTop={1}>
-              <Text bold>What changed</Text>
-              <Text>{whatChanged}</Text>
-            </Box>
-          )}
-
-          {strongest && (
-            <Box flexDirection="column" marginTop={1}>
-              <Text bold color="success">
-                Strongest
-              </Text>
-              <Box flexDirection="row">
-                <Text>{strongest[0].padEnd(24)}</Text>
-                <Text bold>{strongest[1].score!.toFixed(1)}</Text>
-                <Text color={trendColor(strongest[1].trend)}> {strongest[1].trend ?? ''}</Text>
-              </Box>
-            </Box>
-          )}
-
-          {weakest && (
-            <Box flexDirection="column" marginTop={1}>
-              <Text bold color="warning">
-                Needs attention
-              </Text>
-              <Box flexDirection="row">
-                <Text>{weakest[0].padEnd(24)}</Text>
-                <Text bold>{weakest[1].score!.toFixed(1)}</Text>
-                <Text color={trendColor(weakest[1].trend)}> {weakest[1].trend ?? ''}</Text>
-              </Box>
-            </Box>
-          )}
-
-          <Box marginTop={2}>
-            <Button key="view-full-review" label="View full review" onPress={goToScreen('metrics')} />
-          </Box>
-        </Box>
-      )
-    }
-
-    return (
-      <Box flexDirection="column">
-        <Box marginBottom={1}>
-          <Button key="back-to-overview" plain label="← Overview" onPress={goToScreen('overview')} />
-        </Box>
-
-        {digest.currentSignal && (
-          <Text bold color="claude">
-            {digest.currentSignal}
-          </Text>
-        )}
-        {digest.focusNext && (
-          <Text>
-            Focus next: <Text color="warning">{digest.focusNext}</Text>
-          </Text>
-        )}
-        {digest.gap && (
-          <Box marginTop={1}>
-            <Text color="subtle">Gap to next level: {digest.gap}</Text>
-          </Box>
-        )}
-
-        <Box flexDirection="column">
-          {sectionHeader('Summary')}
-          {renderReportList(components, 'Improved', 'success', digest.report.improved)}
-          {renderReportList(components, 'Declined', 'error', digest.report.declined)}
-          {renderReportList(components, 'Consistent', 'subtle', digest.report.consistent)}
-          {renderReportList(components, 'Needs attention', 'warning', digest.report.needsAttention)}
-          {digest.report.improved.length === 0 &&
-            digest.report.declined.length === 0 &&
-            digest.report.consistent.length === 0 && (
-              <Text dimColor>No prior window to compare against yet — run this again next period for trends.</Text>
-            )}
-          {digest.report.noSignal.length > 0 && (
-            <Box flexDirection="column" marginTop={1}>
-              <Text color="subtle">
-                Insufficient evidence this window (no score given, not guessed): {digest.report.noSignal.join(', ')}
-              </Text>
-            </Box>
-          )}
-        </Box>
-
-        <Box flexDirection="column">
-          {sectionHeader('Engineering signals')}
-          {METRICS.map(([name]) => digest.metrics[name])
-            .map((metric, i) => (metric.score === null ? null : [METRICS[i][0], metric] as const))
-            .filter((row): row is readonly [string, ViewMetric] => row !== null)
-            .map(([name, metric]) => renderRow(components, name, metric, !!expanded[name], toggle(name)))}
-        </Box>
-
-        <Box flexDirection="column">
-          {sectionHeader('Overall')}
-          {OVERALL_KEYS.map(key => [key, digest.overall[key]] as const)
-            .filter((row): row is readonly [string, ViewMetric] => row[1]?.score !== null)
-            .map(([name, metric]) =>
-              renderRow(components, `Overall – ${name}`, metric, !!expanded[`overall:${name}`], toggle(`overall:${name}`)),
-            )}
-        </Box>
-
-        <Box flexDirection="column" marginTop={1}>
-          <Text bold>
-            Level: <Text color="claude">{digest.level}</Text>
-          </Text>
-          <Text color="subtle">
-            Bands: Junior → Mid-level → Senior → Staff → Lead/Architect. A trailing + or - means
-            the evidence leans toward the next or previous band, not a clean fit for one.
-          </Text>
-          {digest.usage && (
-            <Text color="subtle">
-              Last run: {(
-                digest.usage.inputTokens +
-                digest.usage.cacheReadTokens +
-                digest.usage.cacheCreationTokens
-              ).toLocaleString()}{' '}
-              input tokens ({digest.usage.cacheReadTokens.toLocaleString()} from cache,{' '}
-              {digest.usage.cacheCreationTokens.toLocaleString()} newly cached),{' '}
-              {digest.usage.outputTokens.toLocaleString()} output tokens
-              {digest.usage.compressionCalls
-                ? ` (includes ${digest.usage.compressionCalls} compression pass${
-                    digest.usage.compressionCalls === 1 ? '' : 'es'
-                  })`
-                : ''}
-            </Text>
-          )}
-          {digest.usage && <Text color="subtle">{formatContextLine(digest.usage)}</Text>}
-        </Box>
-      </Box>
-    )
   })
 
   on('command.run', { command: 'reasoning-review' }, async ($, e) => {
@@ -997,16 +818,22 @@ ${note}
 Transcript:
 ${transcript}`
 
-    const result = await $.model.complete({
-      model: await $.session.model(),
-      prompt: [
-        { text: RUBRIC_PROMPT, cache: true },
-        { text: windowBlock },
-      ],
-      effort: 'high',
-      maxTokens: 8000,
-      timeoutMs: 180_000,
-    })
+    let result: Awaited<ReturnType<EngineInterface['model']['complete']>>
+    try {
+      result = await $.model.complete({
+        model: await $.session.model(),
+        prompt: [
+          { text: RUBRIC_PROMPT, cache: true },
+          { text: windowBlock },
+        ],
+        effort: 'high',
+        maxTokens: 8000,
+        timeoutMs: 180_000,
+      })
+    } catch (err) {
+      if (!isModelCompleteHostCheckFailure(err)) throw err
+      return { text: HOST_VERSION_MESSAGE }
+    }
 
     if (!result.isAnswered) {
       return { text: `Couldn't generate the assessment right now (${result.reason}). Try again shortly.` }
@@ -1032,19 +859,8 @@ ${transcript}`
     await $.store.set(historyKey, updatedHistory).catch(() => undefined)
 
     const viewDigest = buildViewDigest(digest, previous, usage, days, entry.timestamp)
-    await update($, digestAtom, () => viewDigest)
-    await update($, screenAtom, () => 'overview')
-    await $.ui.open({ id: PANE, title: 'Reasoning Review' })
 
-    const totalInputTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens
-    const compressionClause = usage.compressionCalls
-      ? ` (includes ${usage.compressionCalls} compression pass${usage.compressionCalls === 1 ? '' : 'es'})`
-      : ''
-    const usageLine = `Tokens: ${totalInputTokens.toLocaleString()} in (${usage.cacheReadTokens.toLocaleString()} cached, ${usage.cacheCreationTokens.toLocaleString()} newly cached), ${usage.outputTokens.toLocaleString()} out${compressionClause}`
-
-    return {
-      text: `Scorecard updated for the last ${windowLabel} — see the "Reasoning Review" pane.\nCurrent signal: ${digest.currentSignal ?? digest.level}\n${usageLine}\n${formatContextLine(usage)}`,
-    }
+    return { text: renderMarkdown(viewDigest, windowLabel) }
   }).catch(($, e, next) =>
     next.called
       ? next(e)
