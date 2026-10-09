@@ -1,5 +1,5 @@
 {
-  "name": "reasoning-review-marketplace",
+  "name": "NavaneethVijay",
   "description": "Personal marketplace hosting the reasoning-review mod.",
   "owner": { "name": "Navaneeth" },
   "plugins": [{ "name": "reasoning-review", "source": "./" }]
