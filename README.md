@@ -10,12 +10,8 @@ in concrete evidence from what you actually typed and did, not a generic product
 It's for self-growth, not performance review by someone else: nobody but the person who runs it
 ever sees the result.
 
-> **This is a mod, not a plain plugin.** A mod registers its command dynamically from code
-> (`hooks/hooks.json` + `$.command.register`), not from a static `commands/*.md` file, which is what
-> lets it read your session history, call the model directly, and keep trend history across runs —
-> see [What it reads, what it costs, where it goes](#what-it-reads-what-it-costs-where-it-goes). The
-> trade-off: it needs a Claude Code host new enough to support mods. See
-> [Requirements](#requirements) before you install.
+> **This is a mod, not a plain plugin** — it registers `/reasoning-review` dynamically from code
+> rather than a static `commands/*.md` file. See [Requirements](#requirements) before you install.
 
 ## Why
 
@@ -166,28 +162,16 @@ Being a mod, this needs mod support in the Claude Code host you're running it in
 
 - **Terminal**: Claude Code **v2.1.287+**. Check with `claude --version`.
 - **Desktop app**: **v2.1.286+**. Check with `/status` (the **Claude Code** row).
-- **VS Code extension**: hooks run fine in its chat panel (only drawing a pane doesn't — this
-  plugin doesn't use one), but the extension bundles its own engine copy on its own release
-  cadence, and there's no `/status`/`--version` equivalent to check that embedded version
-  directly. If `/reasoning-review` does nothing, this is the most likely reason.
+- **VS Code extension**: no `/status`/`--version` equivalent to check its bundled engine version
+  directly, so an outdated extension is the most likely reason `/reasoning-review` does nothing.
 
-**If `/reasoning-review` is installed but does nothing:** "installed" and "loaded" aren't the same
-thing — a plugin can show up in `/plugin`'s Installed tab or `claude plugin list` while its mod is
-silently refused (old engine version, an org policy, a crash on load). Check, in order:
+**If `/reasoning-review` does nothing:** installed and loaded aren't the same thing. Check:
 
-1. Run `/plugin` and look for the **`mods active`** line (e.g. `1 mod active · reasoning-review`).
-   If `reasoning-review` isn't named there, the mod never loaded — this is the real signal, not the
-   Installed tab.
-2. Run `claude plugin test` from an empty directory — it reports whether mods can load at all here
-   (e.g. `hooks modules are turned off here`, or a remote kill-switch), separate from whether this
-   mod specifically loaded.
-3. Run `claude --debug-file ./mod-debug.log`, reproduce, then `grep reasoning-review
-   ./mod-debug.log` for the exact refusal line, e.g. `hooks module reasoning-review@... not loaded:
-   <reason>`.
-
-If any of this points to an old engine version, the fix is updating Claude Code (or the VS Code
-extension) — there's nothing the plugin itself can do if the host it's running in doesn't support
-mods yet.
+1. `/plugin` → the **`mods active`** line should name `reasoning-review`. If it doesn't, the mod
+   didn't load (update Claude Code, or the VS Code extension).
+2. `claude plugin test` → reports whether mods can load at all here.
+3. `claude --debug-file ./mod-debug.log`, reproduce, then `grep reasoning-review ./mod-debug.log`
+   for the exact refusal reason.
 
 ### Supported usage
 
@@ -246,32 +230,10 @@ With no recent activity on the current project, it says so plainly instead of fa
 
 ### 0.5.0
 
-- **UI changed from an interactive pane to a plain markdown report.** `/reasoning-review` used to
-  open a two-screen pane (Overview, then a "View full review" button into Metrics with
-  expand-on-press rows) via `ui.render`/`$.ui.open`. That pane couldn't be scrolled with the
-  keyboard in some terminals, because opening it never requested focus (`$.ui.open` needs
-  `focus: true` for scroll keys to reach it at all), and the Metrics screen is routinely taller
-  than a pane's default height. Rather than patch focus/scrolling, the pane was removed entirely:
-  the command now returns one complete markdown report straight into the conversation — everything
-  (overview, summary, every metric's full evidence, overall scores, level/bands, usage) in one
-  scroll, using the terminal's own scrollback. No UI code, no pane-focus edge cases.
-- **Fixed a crash on older Claude Code hosts.** `$.model.complete` was called with `effort`,
-  `maxTokens`, and `timeoutMs` — options some hosts don't recognize yet. An unsupported host
-  rejects the call with `model.complete: takes { model, prompt } (host check)`, which previously
-  propagated all the way up and crashed `/reasoning-review` with that raw engine error. This is now
-  caught specifically (`isModelCompleteHostCheckFailure`) and returns a clear message instead:
-  *"Your Claude Code version is too old to run /reasoning-review — ... Update Claude Code to the
-  latest version and try again."* This was most commonly hit through the VS Code extension, whose
-  embedded engine lags the CLI's release cadence.
-- **Root-caused "installed but doesn't invoke" reports, and made the mod/plugin distinction explicit
-  in this README.** Not a bug in the code: this is a *mod* (dynamic command registration via
-  `hooks.json` + code, not a static `commands/*.md` file), which needs Claude Code v2.1.287+
-  (terminal) or v2.1.286+ (Desktop app) — see Requirements and Supported usage above. Previously the
-  README only said "plugin" throughout and buried the mod distinction in the Install section, which
-  is exactly backwards from how confusing it is in practice — it's now called out at the top.
-  "Installed"/listed and "mod loaded" are different signals; the self-diagnosis path (the `mods
-  active` line in `/plugin`, `claude plugin test`, the debug log) is documented above instead of
-  being rediscovered per bug report.
+- UI is now a single markdown report instead of an interactive pane — no pane to scroll or focus.
+- Fixed a crash on older Claude Code hosts (`model.complete: ... (host check)`); now returns a
+  clear "update Claude Code" message instead.
+- README now documents mod version requirements, supported surfaces, and self-diagnosis steps.
 
 ## Developing
 
