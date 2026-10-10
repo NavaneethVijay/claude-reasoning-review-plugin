@@ -754,7 +754,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'reasoning-review',
       description: 'Scored engineering-skill assessment from your Claude Code sessions this week or month',
-      argumentHint: '<week|month>',
+      argumentHint: '<week|month|show>',
     })
     return next(e)
   })
@@ -798,6 +798,7 @@ export const register: Register = on => {
             Developer Review
           </Text>
           <Text color="subtle">{formatWindowRange(digest.generatedAt, digest.days)}</Text>
+          <Text dimColor>↑↓ to scroll</Text>
 
           {capability?.score !== null && (
             <Box flexDirection="column" marginTop={2}>
@@ -860,8 +861,9 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        <Box marginBottom={1}>
+        <Box flexDirection="row" marginBottom={1}>
           <Button key="back-to-overview" plain label="← Overview" onPress={goToScreen('overview')} />
+          <Text dimColor>  ↑↓ to scroll</Text>
         </Box>
 
         {digest.currentSignal && (
@@ -949,6 +951,20 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'reasoning-review' }, async ($, e) => {
+    // Closing the pane (the person's own close, or ctrl+x x) fully discards it — the only way to
+    // see it again is a fresh $.ui.open, and until now that only happened inside a full run, which
+    // re-asks the model from scratch. `show` reopens the scorecard already computed this session
+    // (kept in digestAtom) for free; the normal UX expectation of "I can get it back after I've
+    // already run this" shouldn't cost another model call.
+    if (e.args.trim().toLowerCase() === 'show') {
+      const digest = await read($, digestAtom)
+      if (!digest) {
+        return { text: 'No scorecard yet this session — run /reasoning-review week (or month) first.' }
+      }
+      await $.ui.open({ id: PANE, title: 'Reasoning Review', focus: true, rows: PANE_ROWS })
+      return { text: 'Reopened the "Reasoning Review" pane.' }
+    }
+
     const days = windowDays(e.args)
     const cutoffMs = Date.now() - days * MS_PER_DAY
     const windowLabel = days === 30 ? 'month' : 'week'

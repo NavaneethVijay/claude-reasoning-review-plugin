@@ -191,9 +191,15 @@ project's own history:
 ```
 /reasoning-review week
 /reasoning-review month
+/reasoning-review show
 ```
 
 With no recent activity on the current project, it says so plainly instead of fabricating a score.
+
+Closing the pane (its own close mark, or ctrl+x x) discards it — the normal way panes work — and
+`week`/`month` always generate a fresh scorecard, calling the model again. `show` reopens the pane
+from whatever was last computed this session, for free, with no new model call; it's there so
+closing the pane by mistake doesn't mean paying for a whole new assessment just to see it again.
 
 ## Scoring rules it follows
 
@@ -206,6 +212,22 @@ With no recent activity on the current project, it says so plainly instead of fa
   clear the evidence behind it actually is — independent of how good or bad the score is.
 
 ## Changelog
+
+### 0.8.0
+
+- Added `/reasoning-review show`: reopens the pane from the scorecard already computed this
+  session, with no model call. Closing the pane discards it (normal pane behaviour), and until now
+  the only way to see it again was `week`/`month`, which always generates a fresh assessment —
+  so getting the pane back after closing it by mistake meant paying for a whole new model run just
+  to look at it again.
+
+### 0.7.2
+
+- Added an "↑↓ to scroll" hint to both pane screens. Arrow-key scrolling only works once the pane
+  has focus, and mouse-wheel scrolling depends on the terminal forwarding wheel events at all —
+  common on macOS terminals, often not on Linux (no SGR mouse reporting, tmux without mouse mode,
+  an SSH hop in between). Without the hint, a person on such a terminal had no way to discover that
+  the arrow keys work even though the wheel does nothing.
 
 ### 0.7.1
 
