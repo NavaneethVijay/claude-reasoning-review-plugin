@@ -174,7 +174,7 @@ Requirements above.
 
 Installing it gets you a snapshot, not a live link to this repo — a push here doesn't reach anyone
 who's already installed it. Whenever a new version has shipped (check `version` in `plugin.json`,
-or just ask the maintainer), get it with:
+[CHANGELOG.md](./CHANGELOG.md), or just ask the maintainer), get it with:
 
 ```
 claude plugin update reasoning-review
@@ -191,9 +191,17 @@ project's own history:
 ```
 /reasoning-review week
 /reasoning-review month
+/reasoning-review show
 ```
 
 With no recent activity on the current project, it says so plainly instead of fabricating a score.
+
+Closing the pane (its own close mark, or ctrl+x x) discards it — the normal way panes work — and
+`week`/`month` always generate a fresh scorecard, calling the model again. `show` reopens the pane
+from whatever was last computed this session, for free, with no new model call; it's there so
+closing the pane by mistake doesn't mean paying for a whole new assessment just to see it again.
+`/reasoning-review`'s own output line also carries an "Open the Reasoning Review pane" button once
+a scorecard exists, so a click does the same thing `show` does — no need to know `show` exists.
 
 ## Scoring rules it follows
 
@@ -205,31 +213,7 @@ With no recent activity on the current project, it says so plainly instead of fa
 - Every non-null score also carries a confidence (High/Medium/Low), reflecting how much and how
   clear the evidence behind it actually is — independent of how good or bad the score is.
 
-## Changelog
-
-### 0.7.0
-
-- Brought back the interactive two-screen Pane UI (Overview + Metrics), this time with the
-  scroll/focus bugs that caused it to be dropped in 0.5.0 actually fixed: `$.ui.open` now passes
-  `focus: true`, so the pane holds the keyboard as soon as it opens and the arrow keys scroll it
-  immediately, and it requests a taller `rows` so the Metrics screen needs less scrolling in the
-  first place. `/reasoning-review` still returns a short text reply alongside the pane (current
-  signal, token usage) for surfaces that can't place a pane at all.
-
-### 0.6.0
-
-- Added a compact "Signals at a glance" table (one row per scored metric) at the top of the report.
-- Dropped the per-metric ASCII bar and the redundant "Previous/Current/observations" recap line —
-  that information is already in the section header.
-- Capped displayed evidence per metric to 4 bullets, with a "+N more observations not shown" note
-  instead of printing every observation when a metric has a lot of evidence.
-
-### 0.5.0
-
-- UI is now a single markdown report instead of an interactive pane — no pane to scroll or focus.
-- Fixed a crash on older Claude Code hosts (`model.complete: ... (host check)`); now returns a
-  clear "update Claude Code" message instead.
-- README now documents mod version requirements, supported surfaces, and self-diagnosis steps.
+See [CHANGELOG.md](./CHANGELOG.md) for release history.
 
 ## Developing
 
@@ -246,7 +230,8 @@ Overview/Metrics screens and the expand/collapse and navigation buttons).
 
 1. Bump `version` in `.claude-plugin/plugin.json` — anyone checking `claude plugin list` relies on
    this to see whether they're behind.
-2. `git publish` — a local alias for `git push && claude plugin update reasoning-review`, so your
+2. Add an entry to [CHANGELOG.md](./CHANGELOG.md) under the new version.
+3. `git publish` — a local alias for `git push && claude plugin update reasoning-review`, so your
    own installed copy updates in the same step. (This only updates *your* copy — see "Updating"
    above for why everyone else still has to pull their own update.)
-3. Restart your own session to pick it up.
+4. Restart your own session to pick it up.

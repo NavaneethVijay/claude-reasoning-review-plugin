@@ -21,10 +21,12 @@ const TREND_EPSILON = 0.4
 const NEEDS_ATTENTION_MAX = 4
 
 // The pane's default inline height is a third of the terminal — the Metrics screen (12 metrics +
-// Overall + summary) routinely needs more than that. Requesting more up front means less scrolling
-// in the common case; the engine still scrolls whatever doesn't fit, but only once the pane holds
-// the keyboard (`focus: true` on $.ui.open below) — without it the arrow keys never reach the pane.
-const PANE_ROWS = 40
+// Overall + summary) routinely needs more than that. `rows` is only a request ("up to what the
+// layout spares"), so asking for more than almost any terminal can actually grant costs nothing —
+// the engine clamps it to whatever room is available, it just never asks for less than that room.
+// The engine still scrolls whatever doesn't fit past that, but only once the pane holds the
+// keyboard (`focus: true` on $.ui.open below) — without it the arrow keys never reach the pane.
+const PANE_ROWS = 60
 
 type Anchors = { 2: string; 5: string; 8: string; 10: string }
 
@@ -752,7 +754,7 @@ export const register: Register = on => {
     await $.command.register({
       name: 'reasoning-review',
       description: 'Scored engineering-skill assessment from your Claude Code sessions this week or month',
-      argumentHint: '<week|month>',
+      argumentHint: '<week|month|show>',
     })
     return next(e)
   })
@@ -796,6 +798,7 @@ export const register: Register = on => {
             Developer Review
           </Text>
           <Text color="subtle">{formatWindowRange(digest.generatedAt, digest.days)}</Text>
+          <Text dimColor>↑↓ to scroll</Text>
 
           {capability?.score !== null && (
             <Box flexDirection="column" marginTop={2}>
@@ -858,8 +861,9 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        <Box marginBottom={1}>
+        <Box flexDirection="row" marginBottom={1}>
           <Button key="back-to-overview" plain label="← Overview" onPress={goToScreen('overview')} />
+          <Text dimColor>  ↑↓ to scroll</Text>
         </Box>
 
         {digest.currentSignal && (
@@ -946,7 +950,41 @@ export const register: Register = on => {
     )
   })
 
+  // Lets the person click the command's own output line to reopen the pane, instead of having to
+  // know `/reasoning-review show` exists or type it out. Draws the row's text the same way the
+  // engine's own default would (plain Markdown — what the model reads is the stored row, not this
+  // tree, so this never affects it) and appends a button under it when there's a digest to reopen.
+  // A click always presses a Button, with no keyboard focus needed; the terminal surface needs
+  // mouse reporting for that (see the pane's own "↑↓ to scroll" hint for the same caveat), so this
+  // is additive to `show`, not a replacement.
+  on('ui.render', { component: 'CommandOutput', props: { command: 'reasoning-review' } }, async ($, e) => {
+    const { Box, Markdown, Button } = $.ui.resolve(e)
+    const digest = e.props.isErrored ? null : await read($, digestAtom)
+    if (!digest) return <Markdown text={e.props.text} />
+
+    return (
+      <Box flexDirection="column">
+        <Markdown text={e.props.text} />
+        <Button plain label="Open the Reasoning Review pane" onPress={() => void $.ui.open({ id: PANE, title: 'Reasoning Review', focus: true, rows: PANE_ROWS })} />
+      </Box>
+    )
+  })
+
   on('command.run', { command: 'reasoning-review' }, async ($, e) => {
+    // Closing the pane (the person's own close, or ctrl+x x) fully discards it — the only way to
+    // see it again is a fresh $.ui.open, and until now that only happened inside a full run, which
+    // re-asks the model from scratch. `show` reopens the scorecard already computed this session
+    // (kept in digestAtom) for free; the normal UX expectation of "I can get it back after I've
+    // already run this" shouldn't cost another model call.
+    if (e.args.trim().toLowerCase() === 'show') {
+      const digest = await read($, digestAtom)
+      if (!digest) {
+        return { text: 'No scorecard yet this session — run /reasoning-review week (or month) first.' }
+      }
+      await $.ui.open({ id: PANE, title: 'Reasoning Review', focus: true, rows: PANE_ROWS })
+      return { text: 'Reopened the "Reasoning Review" pane.' }
+    }
+
     const days = windowDays(e.args)
     const cutoffMs = Date.now() - days * MS_PER_DAY
     const windowLabel = days === 30 ? 'month' : 'week'
