@@ -342,6 +342,45 @@ test('"show" says there is nothing to reopen before any scorecard has run this s
   expect(result.text).toContain('No scorecard yet this session')
 })
 
+test('command output has no "open pane" button before any scorecard has run this session', async $ => {
+  const ui = await $.ui.mount({
+    plugin: 'reasoning-review',
+    surface: 'terminal',
+    component: 'CommandOutput',
+    props: { command: 'reasoning-review', args: 'week', text: 'No Claude Code activity on this project in the last week.', isErrored: false },
+  })
+
+  expect(await ui.find({ text: /No Claude Code activity/ })).toBeTruthy()
+  expect(await ui.find({ text: /Open the Reasoning Review pane/ })).toBeFalsy()
+})
+
+test('command output offers a clickable "open pane" button once a scorecard exists', async ($, on) => {
+  mock.env(on, { HOME: '/home/test' })
+  on('session.root', () => ({ value: '/work/project' }))
+  on('session.model', () => ({ value: 'sonnet' }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  mockSessionWithOneMessage(on)
+  on('model.complete', () => ({
+    value: {
+      isAnswered: true,
+      text: JSON.stringify(buildDigest()),
+      usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    },
+  }))
+
+  const result = await $.command.run({ command: 'reasoning-review', args: 'week' })
+
+  const ui = await $.ui.mount({
+    plugin: 'reasoning-review',
+    surface: 'terminal',
+    component: 'CommandOutput',
+    props: { command: 'reasoning-review', args: 'week', text: result.text, isErrored: false },
+  })
+
+  expect(await ui.find({ text: /Reasoning Review/ })).toBeTruthy()
+  expect(await ui.find({ text: /Open the Reasoning Review pane/ })).toBeTruthy()
+})
+
 test('falls back gracefully when the model does not return valid JSON', async ($, on) => {
   mock.env(on, { HOME: '/home/test' })
   on('session.root', () => ({ value: '/work/project' }))

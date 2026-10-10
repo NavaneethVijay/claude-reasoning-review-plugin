@@ -950,6 +950,26 @@ export const register: Register = on => {
     )
   })
 
+  // Lets the person click the command's own output line to reopen the pane, instead of having to
+  // know `/reasoning-review show` exists or type it out. Draws the row's text the same way the
+  // engine's own default would (plain Markdown — what the model reads is the stored row, not this
+  // tree, so this never affects it) and appends a button under it when there's a digest to reopen.
+  // A click always presses a Button, with no keyboard focus needed; the terminal surface needs
+  // mouse reporting for that (see the pane's own "↑↓ to scroll" hint for the same caveat), so this
+  // is additive to `show`, not a replacement.
+  on('ui.render', { component: 'CommandOutput', props: { command: 'reasoning-review' } }, async ($, e) => {
+    const { Box, Markdown, Button } = $.ui.resolve(e)
+    const digest = e.props.isErrored ? null : await read($, digestAtom)
+    if (!digest) return <Markdown text={e.props.text} />
+
+    return (
+      <Box flexDirection="column">
+        <Markdown text={e.props.text} />
+        <Button plain label="Open the Reasoning Review pane" onPress={() => void $.ui.open({ id: PANE, title: 'Reasoning Review', focus: true, rows: PANE_ROWS })} />
+      </Box>
+    )
+  })
+
   on('command.run', { command: 'reasoning-review' }, async ($, e) => {
     // Closing the pane (the person's own close, or ctrl+x x) fully discards it — the only way to
     // see it again is a fresh $.ui.open, and until now that only happened inside a full run, which
