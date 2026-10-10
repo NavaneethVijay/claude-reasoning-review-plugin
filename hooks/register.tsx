@@ -21,10 +21,12 @@ const TREND_EPSILON = 0.4
 const NEEDS_ATTENTION_MAX = 4
 
 // The pane's default inline height is a third of the terminal — the Metrics screen (12 metrics +
-// Overall + summary) routinely needs more than that. Requesting more up front means less scrolling
-// in the common case; the engine still scrolls whatever doesn't fit, but only once the pane holds
-// the keyboard (`focus: true` on $.ui.open below) — without it the arrow keys never reach the pane.
-const PANE_ROWS = 40
+// Overall + summary) routinely needs more than that. `rows` is only a request ("up to what the
+// layout spares"), so asking for more than almost any terminal can actually grant costs nothing —
+// the engine clamps it to whatever room is available, it just never asks for less than that room.
+// The engine still scrolls whatever doesn't fit past that, but only once the pane holds the
+// keyboard (`focus: true` on $.ui.open below) — without it the arrow keys never reach the pane.
+const PANE_ROWS = 60
 
 type Anchors = { 2: string; 5: string; 8: string; 10: string }
 

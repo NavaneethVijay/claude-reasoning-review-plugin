@@ -207,6 +207,13 @@ With no recent activity on the current project, it says so plainly instead of fa
 
 ## Changelog
 
+### 0.7.1
+
+- Raised the pane's requested inline height (`rows`) from 40 to 60. `rows` is only a request —
+  the engine clamps it to whatever the terminal actually has spare — so asking for more costs
+  nothing and reduces how often the Overview screen's content (What changed, Strongest, Needs
+  attention, the "View full review" button) lands below the fold on a typical terminal size.
+
 ### 0.7.0
 
 - Brought back the interactive two-screen Pane UI (Overview + Metrics), this time with the
