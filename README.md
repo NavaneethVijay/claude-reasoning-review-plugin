@@ -23,61 +23,38 @@ from someone who is operating at that level independently.
 
 ## Sample output
 
-Running `/reasoning-review week` prints the full assessment straight into the conversation as one
-markdown report — no separate pane to open, focus, or scroll; it reads and scrolls like any other
-Claude Code response:
+Running `/reasoning-review week` opens a **"Reasoning Review" pane** with an Overview screen —
+the headline Engineering Capability score and trend, a short "what changed" narrative, and the
+single strongest and weakest metrics this window — and a "View full review" button into a Metrics
+screen with the full per-metric breakdown:
 
 ```
-## Developer Review — Sep 30 – Oct 6 (week)
+Developer Review
+Sep 30 – Oct 6
 
-**Level:** Senior (confidence: Medium)
-Strong Senior, showing Staff-level architecture behaviour.
-**Engineering Capability:** 7.9 ↑ (+0.4)
+Engineering Capability
+7.9  ↑ +0.4
+────────────────────────────────────────────
 
-### What changed
+What changed
 You're getting better at challenging Claude's architectural suggestions. In the last few
 tasks you caught coupling and ownership issues before implementation.
 
-**Strongest:** Architecture — 8.2 ↑
-**Needs attention:** Debugging — 6.9 ↓
+Strongest
+Architecture              8.2  ↑
 
-**Focus next:** Root-cause debugging.
-**Gap to next level:** Show root-cause debugging before reaching for a fix.
+Needs attention
+Debugging                 6.9  ↓
 
----
-
-### Summary
-**Improved:** Architecture, AI Collaboration
-**Declined:** Debugging
-**Needs attention:** Debugging
-
----
-
-### Engineering signals
-
-#### Architecture — 8.2 ↑ (+0.7) · Confidence: High
-████████████████░░░░
-
-Strong senior-level architectural reasoning; approaching Staff level.
-
-**Strong evidence**
-- Challenged the proposed repository abstraction before implementation, citing
-  caching and tenant-isolation consequences.
-- Identified coupling between the GraphQL client and the application layer before
-  it was built, not after.
-
-Previous: 7.5 · Current: 8.2 · 2 observations
-
-#### Debugging — 6.9 ↓ (-0.4) · Confidence: Medium
-█████████████░░░░░░░
-...
+                                           [ View full review ]
 ```
 
-Every scored metric gets its own section — score, trend, delta, the evidence behind it, and a
-deterministic Summary (Improved / Declined / Consistent / Needs attention — computed from real
-score movement, never re-asked of the model). Metrics with nothing to go on in the window (e.g. no
-security work happened) are never guessed at or scored low for absence of evidence — they're called
-out explicitly ("Insufficient evidence this window...") rather than silently dropped.
+The Metrics screen lists every scored metric as a collapsed row (score, trend, delta, a bar);
+pressing one expands "Why this score?" — the full evidence list, previous vs. current score,
+observation count, and confidence (High/Medium/Low). Nothing is truncated: every observation the
+model cited is there once you expand it. The pane opens with keyboard focus, so the arrow keys
+scroll it immediately — no extra step to focus it first, and a tree taller than the pane's frame
+(the Metrics screen routinely is) scrolls rather than getting cut off.
 
 ## What it reads, what it costs, where it goes
 
@@ -99,9 +76,9 @@ out explicitly ("Insufficient evidence this window...") rather than silently dro
 
 ## What it shows
 
-One markdown report, printed straight into the conversation — the headline Engineering Capability
-score and trend, a short "what changed" narrative, and the single strongest and weakest metrics
-this window, followed immediately by the full breakdown:
+An interactive **"Reasoning Review" pane** with two screens. **Overview** — the headline
+Engineering Capability score and trend, a short "what changed" narrative, and the single strongest
+and weakest metrics this window, with a button into the full breakdown. **Metrics** —
 
 - A deterministic **Summary** — Improved / Declined / Consistent / Needs attention — computed in
   code from actual score deltas, never re-asked of the model, so it's traceable to real movement.
@@ -116,10 +93,11 @@ this window, followed immediately by the full breakdown:
   this project and window.
 - A current-level estimate with an explicit gap to the next band.
 
-Every scored metric's section includes "Why this score?" in full — the evidence behind it as a
-checklist, previous vs. current score, how many observations back it, and a confidence rating
-(High/Medium/Low) for how solid that evidence actually is. Nothing is collapsed or hidden behind a
-click; it's all there in the one scroll.
+Each metric row is collapsed by default; pressing it expands "Why this score?" — the full evidence
+behind it as a checklist, previous vs. current score, how many observations back it, and a
+confidence rating (High/Medium/Low) for how solid that evidence actually is. The pane opens with
+keyboard focus, so the arrow keys scroll and navigate it right away, and a screen taller than the
+pane's frame scrolls instead of getting cut off.
 
 ## Level bands
 
@@ -175,15 +153,16 @@ Being a mod, this needs mod support in the Claude Code host you're running it in
 
 ### Supported usage
 
-`/reasoning-review` only ever returns a markdown text reply — it draws no pane, band, or any other
-UI — so it works anywhere a mod's hooks run at all, with no surface-specific limitation:
+`/reasoning-review` always returns a short text reply (current signal, token usage) and opens the
+"Reasoning Review" pane with the full scorecard. The pane itself draws on every surface; a surface
+that can't place one at all still gets the text reply:
 
 | Where you run Claude Code | Works? |
 | :- | :- |
-| Terminal (`claude`, incl. an editor's integrated terminal, JetBrains plugin) | Yes |
-| Desktop app (Code tab, not WSL) | Yes |
-| VS Code extension's chat panel | Yes |
-| `claude -p` / the Agent SDK | Yes |
+| Terminal (`claude`, incl. an editor's integrated terminal, JetBrains plugin) | Yes, full pane |
+| Desktop app (Code tab, not WSL) | Yes, full pane |
+| VS Code extension's chat panel | Yes, full pane |
+| `claude -p` / the Agent SDK | Text reply only — no interactive surface to open a pane on |
 | Remote Control (from claude.ai or the mobile app) | Yes, on the machine the session runs on |
 | Cloud session | Yes, if the plugin reaches that cloud session |
 | WSL session inside the Desktop app | No — plugins aren't available in WSL sessions at all |
@@ -228,6 +207,23 @@ With no recent activity on the current project, it says so plainly instead of fa
 
 ## Changelog
 
+### 0.7.0
+
+- Brought back the interactive two-screen Pane UI (Overview + Metrics), this time with the
+  scroll/focus bugs that caused it to be dropped in 0.5.0 actually fixed: `$.ui.open` now passes
+  `focus: true`, so the pane holds the keyboard as soon as it opens and the arrow keys scroll it
+  immediately, and it requests a taller `rows` so the Metrics screen needs less scrolling in the
+  first place. `/reasoning-review` still returns a short text reply alongside the pane (current
+  signal, token usage) for surfaces that can't place a pane at all.
+
+### 0.6.0
+
+- Added a compact "Signals at a glance" table (one row per scored metric) at the top of the report.
+- Dropped the per-metric ASCII bar and the redundant "Previous/Current/observations" recap line —
+  that information is already in the section header.
+- Capped displayed evidence per metric to 4 bullets, with a "+N more observations not shown" note
+  instead of printing every observation when a metric has a lot of evidence.
+
 ### 0.5.0
 
 - UI is now a single markdown report instead of an interactive pane — no pane to scroll or focus.
@@ -242,8 +238,9 @@ claude plugin validate .
 claude plugin test .
 ```
 
-See `claude plugin test`'s output for the full suite (pure-logic unit tests plus engine-level tests
-that run `/reasoning-review` and assert on the returned markdown report).
+See `claude plugin test`'s output for the full suite (pure-logic unit tests, engine-level tests that
+run `/reasoning-review` and assert on its text reply, plus pane-mount tests that exercise the
+Overview/Metrics screens and the expand/collapse and navigation buttons).
 
 ### Maintainer: releasing a change
 

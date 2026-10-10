@@ -23,6 +23,8 @@ export type HistoryEntry = Digest & { timestamp: string; days: number }
 
 export type Trend = '↑' | '↓' | '→' | null
 
+export type Screen = 'overview' | 'metrics'
+
 export type ViewMetric = MetricEntry & { trend: Trend; delta: number | null; previousScore: number | null }
 
 export type ReportBuckets = {
@@ -57,4 +59,14 @@ export type ViewDigest = {
   report: ReportBuckets
   generatedAt: string
   days: number
+}
+
+declare module 'claude-code' {
+  interface PluginState {
+    'reasoning-review': {
+      digest: ViewDigest | null
+      expanded: Record<string, boolean>
+      screen: Screen
+    }
+  }
 }
